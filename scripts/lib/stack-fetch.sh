@@ -12,9 +12,6 @@
 
 # Downloads come from the same domain that release/versions.conf uploads to.
 : "${NIMO_DOWNLOAD_DOMAIN:=https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/}"
-# Key prefix under the download domain. NIMO_OSS_PREFIX is the former name and
-# is still honoured so existing environments keep working.
-: "${NIMO_KEY_PREFIX:=${NIMO_OSS_PREFIX:-NimoTech}}"
 # Third-party dependencies (the official qdrant, ollama and similar binaries) are
 # mirrored under deps/ so machines with no direct route to github.com or
 # ollama.com can still install. Layout:
@@ -22,23 +19,40 @@
 #   ${NIMO_DEPS_BASE}/ollama/ollama-linux-<arch>.tar.zst
 : "${NIMO_DEPS_BASE:=https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/deps}"
 
-# Default version for every component, overridable per component with e.g.
-# STACK_VERSION_PARSER. release/versions.conf is the single source of truth, so
-# read NIMOOS_VERSION from it when this library sits inside a checkout. Run
+# release/versions.conf is the single source of truth for both the version and the
+# key prefix, so read them from it when this library sits inside a checkout. Run
 # standalone — bootstrapped into a temp directory by `curl | bash` — there is no
-# versions.conf to read, and the literal below applies.
+# versions.conf to read and the literal fallbacks below apply.
+#
+# The prefix must agree with what upload-dist.sh writes. It did not: uploads went
+# to S3_PREFIX while this library looked under a hardcoded "NimoTech", left over
+# from the Aliyun layout that mirrored github.com/NimoTech/<project>/. Every
+# stack component would have 404'd. Reading one value from one file prevents the
+# two sides drifting apart again.
+_sf_conf_value() {   # _sf_conf_value <KEY> -> value, or empty
+    local dir conf
+    dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+    [ -n "${dir}" ] || return 0
+    conf="${dir}/../../release/versions.conf"
+    [ -f "${conf}" ] || return 0
+    # grep the one key rather than sourcing the file, which would also pull in
+    # every VERSION_* and the S3 settings.
+    grep -m1 "^$1=" "${conf}" | cut -d= -f2- | tr -d '"\r'
+}
+
 if [ -z "${STACK_VERSION:-}" ]; then
-    _sf_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
-    _sf_conf="${_sf_dir}/../../release/versions.conf"
-    if [ -n "${_sf_dir}" ] && [ -f "${_sf_conf}" ]; then
-        # Only NIMOOS_VERSION is wanted; grep it out rather than sourcing the file,
-        # which would also pull in every VERSION_* and the S3 settings.
-        _sf_ver="$(grep -m1 '^NIMOOS_VERSION=' "${_sf_conf}" | cut -d= -f2- | tr -d '"\r')"
-        [ -n "${_sf_ver}" ] && STACK_VERSION="v${_sf_ver}"
-    fi
-    unset _sf_dir _sf_conf _sf_ver
+    _sf_ver="$(_sf_conf_value NIMOOS_VERSION)"
+    [ -n "${_sf_ver}" ] && STACK_VERSION="v${_sf_ver}"
+    unset _sf_ver
 fi
 : "${STACK_VERSION:=v1.9.4-alpha1}"
+
+# Key prefix under the download domain. NIMO_OSS_PREFIX is the former name and is
+# still honoured so existing environments keep working.
+if [ -z "${NIMO_KEY_PREFIX:-}" ] && [ -z "${NIMO_OSS_PREFIX:-}" ]; then
+    NIMO_KEY_PREFIX="$(_sf_conf_value S3_PREFIX)"
+fi
+: "${NIMO_KEY_PREFIX:=${NIMO_OSS_PREFIX:-releases}}"
 
 # uname -m -> the architecture token used in release file names
 stack_arch() {

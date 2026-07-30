@@ -245,24 +245,30 @@ fi
 # 4) Bucket policy — grant read to that distribution only
 # ---------------------------------------------------------------------------
 info "step 4/5: bucket policy"
+# The grant is scoped to the prefixes we actually publish, NOT to bucket/*.
+# This bucket is shared with other systems whose objects must never become
+# publicly readable — device upgrade logs and database backups among them. A
+# bucket/* grant plus the distribution's default "*" behaviour would put every
+# one of those keys behind a public URL. Add a prefix here only when you intend
+# it to be world-readable.
+PUBLIC_PREFIXES=( "get" "deps" "ttyd" "${S3_PREFIX}" )
 POL="$(mktemp)"
-cat > "${POL}" <<JSON
 {
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Sid": "AllowCloudFrontServicePrincipalReadOnly",
-    "Effect": "Allow",
-    "Principal": { "Service": "cloudfront.amazonaws.com" },
-    "Action": "s3:GetObject",
-    "Resource": "arn:aws:s3:::${S3_BUCKET}/*",
-    "Condition": {
-      "StringEquals": {
-        "AWS:SourceArn": "arn:aws:cloudfront::${ACCOUNT_ID}:distribution/${DIST_ID}"
-      }
-    }
-  }]
-}
-JSON
+    printf '{\n  "Version": "2012-10-17",\n  "Statement": [{\n'
+    printf '    "Sid": "AllowCloudFrontServicePrincipalReadOnly",\n'
+    printf '    "Effect": "Allow",\n'
+    printf '    "Principal": { "Service": "cloudfront.amazonaws.com" },\n'
+    printf '    "Action": "s3:GetObject",\n'
+    printf '    "Resource": [\n'
+    for i in "${!PUBLIC_PREFIXES[@]}"; do
+        sep=","; [ "$((i + 1))" -eq "${#PUBLIC_PREFIXES[@]}" ] && sep=""
+        printf '      "arn:aws:s3:::%s/%s/*"%s\n' "${S3_BUCKET}" "${PUBLIC_PREFIXES[$i]}" "${sep}"
+    done
+    printf '    ],\n'
+    printf '    "Condition": {\n      "StringEquals": {\n'
+    printf '        "AWS:SourceArn": "arn:aws:cloudfront::%s:distribution/%s"\n' "${ACCOUNT_ID}" "${DIST_ID}"
+    printf '      }\n    }\n  }]\n}\n'
+} > "${POL}"
 if [ "${DRY_RUN}" -eq 1 ]; then
     echo -e "${C_Y}[dry-run]${C_0} aws s3api put-bucket-policy with:"
     sed 's/^/          /' "${POL}"
