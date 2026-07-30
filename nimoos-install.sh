@@ -521,11 +521,13 @@ EOF
 #Install Rclone
 Install_rclone_from_source() {
   ${sudo_cmd} wget -qO ./install.sh https://rclone.org/install.sh
-  if [[ "${REGION}" = "China" ]] || [[ "${REGION}" = "CN" ]]; then
-    sed -i 's/downloads.rclone.org/nimoos-s3-bucket.s3.us-east-2.amazonaws.com/g' ./install.sh
-  else
-    sed -i 's/downloads.rclone.org/get.casaos.io/g' ./install.sh
-  fi
+  # Fetch rclone from its own official mirror.
+  #
+  # This used to rewrite downloads.rclone.org to a mirror: our bucket for CN,
+  # and get.casaos.io otherwise. Both were wrong. The bucket has no rclone/
+  # prefix, so the CN path 404'd; and get.casaos.io is CasaOS's own
+  # infrastructure, which we should not be sending our users' downloads to.
+  # rclone's official downloads are globally available, so no mirror is needed.
   ${sudo_cmd} chmod +x ./install.sh
   ${sudo_cmd} ./install.sh || {
     Show 1 "Installation failed, please try again."
