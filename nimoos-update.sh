@@ -15,7 +15,7 @@
 #   只负责"把已装好的 NimoOS 换成新版本的二进制 + 前端 + 配置并重启"。
 #
 #   用法:
-#     curl -fsSL https://nimoos.oss-cn-shenzhen.aliyuncs.com/get/nimoos-update.sh | sudo bash
+#     curl -fsSL https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/get/nimoos-update.sh | sudo bash
 #       仅更新核心(跳过重栈):
 #     curl -fsSL .../get/nimoos-update.sh | sudo NIMO_SKIP_STACK=1 bash
 #       指定版本 / 只更新栈:
@@ -43,7 +43,7 @@ readonly UNAME_U
 
 TARGET_ARCH=""
 TMP_ROOT=/tmp/nimoos-updater
-NIMO_DOWNLOAD_DOMAIN="https://nimoos.oss-cn-shenzhen.aliyuncs.com/"
+NIMO_DOWNLOAD_DOMAIN="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/"
 
 # 版本(可被 --version / 环境变量覆盖)。AppStore 走独立版本线。
 NIMO_UPDATE_VERSION="${NIMO_UPDATE_VERSION:-v1.9.4-alpha1}"

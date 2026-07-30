@@ -8,9 +8,9 @@
 #   This script installs NimoOS to your system.
 #   Usage:
 #
-#   	$ wget -qO- https://nimoos.oss-cn-shenzhen.aliyuncs.com/get/nimoos-install.sh | sudo bash
+#   	$ wget -qO- https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 #   	  or
-#   	$ curl -fsSL https://nimoos.oss-cn-shenzhen.aliyuncs.com/get/nimoos-install.sh | sudo bash
+#   	$ curl -fsSL https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 #
 #   In automated environments, you may want to run as root.
 #   If using curl, we recommend using the -fsSL flags.
@@ -75,7 +75,7 @@ UNAME_U="$(uname -s)"
 readonly UNAME_U
 
 readonly NIMO_CONF_PATH=/etc/nimoos/gateway.ini
-readonly NIMO_UNINSTALL_URL="https://nimoos.oss-cn-shenzhen.aliyuncs.com/uninstall/v0.4.17"
+readonly NIMO_UNINSTALL_URL="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/uninstall/v0.4.17"
 readonly NIMO_UNINSTALL_PATH=/usr/bin/nimoos-uninstall
 
 # REQUIREMENTS CONF PATH
@@ -101,7 +101,7 @@ readonly GREEN_SEPARATOR="${aCOLOUR[0]}:$COLOUR_RESET"
 TARGET_ARCH=""
 TMP_ROOT=/tmp/nimoos-installer
 REGION="UNKNOWN"
-NIMO_DOWNLOAD_DOMAIN="https://nimoos.oss-cn-shenzhen.aliyuncs.com/"
+NIMO_DOWNLOAD_DOMAIN="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/"
 
 trap 'onCtrlC' INT
 onCtrlC() {
@@ -192,7 +192,7 @@ Get_Download_Url_Domain() {
        REGION=$(${sudo_cmd} curl --connect-timeout 2 -s https://ifconfig.io/country_code || echo "")
     fi
     # Force use aliyun oss
-    NIMO_DOWNLOAD_DOMAIN="https://nimoos.oss-cn-shenzhen.aliyuncs.com/"
+    NIMO_DOWNLOAD_DOMAIN="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/"
 }
 
 # 1 Check Arch
@@ -214,20 +214,20 @@ Check_Arch() {
     esac
     Show 0 "Your hardware architecture is : $UNAME_M"
     NIMO_PACKAGES=(
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Gateway/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-gateway-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-MessageBus/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-message-bus-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-UserService/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-user-service-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-LocalStorage/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-local-storage-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-AppManagement/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-app-management-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-CLI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-cli-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-UI/releases/download/v1.9.4-alpha1/linux-all-nimoos-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-AppStore/releases/download/v1.0.9/linux-all-appstore-v1.0.9.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-AI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-ai-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Wiki/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-wiki-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Search/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-search-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Photos/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-photos-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Terminal/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-terminal-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Gateway/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-gateway-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-MessageBus/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-message-bus-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-UserService/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-user-service-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-LocalStorage/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-local-storage-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-AppManagement/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-app-management-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-CLI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-cli-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-UI/releases/download/v1.9.4-alpha1/linux-all-nimoos-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-AppStore/releases/download/v1.0.9/linux-all-appstore-v1.0.9.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-AI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-ai-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Wiki/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-wiki-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Search/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-search-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Photos/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-photos-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Terminal/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-terminal-v1.9.4-alpha1.tar.gz"
     )
 }
 
@@ -522,7 +522,7 @@ EOF
 Install_rclone_from_source() {
   ${sudo_cmd} wget -qO ./install.sh https://rclone.org/install.sh
   if [[ "${REGION}" = "China" ]] || [[ "${REGION}" = "CN" ]]; then
-    sed -i 's/downloads.rclone.org/nimoos.oss-cn-shenzhen.aliyuncs.com/g' ./install.sh
+    sed -i 's/downloads.rclone.org/nimoos-s3-bucket.s3.us-east-2.amazonaws.com/g' ./install.sh
   else
     sed -i 's/downloads.rclone.org/get.casaos.io/g' ./install.sh
   fi

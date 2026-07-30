@@ -8,13 +8,13 @@
 # 下载域名/前缀/版本可由环境变量覆盖(供 nimoos-stack-install.sh 统一注入)。
 
 # 上传与安装统一走深圳(与 release/versions.conf 的 DOWNLOAD_DOMAIN 一致)
-: "${NIMO_DOWNLOAD_DOMAIN:=https://nimoos.oss-cn-shenzhen.aliyuncs.com/}"
+: "${NIMO_DOWNLOAD_DOMAIN:=https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/}"
 : "${NIMO_OSS_PREFIX:=NimoTech}"
 # 第三方依赖(qdrant / ollama 等官方二进制包)托管在 OSS 的 deps/ 下,
 # 让无法直连 github.com / ollama.com 的机器也能装。布局:
 #   ${NIMO_DEPS_BASE}/qdrant/qdrant-<arch>.tar.gz
 #   ${NIMO_DEPS_BASE}/ollama/ollama-linux-<arch>.tar.zst
-: "${NIMO_DEPS_BASE:=https://nimoos.oss-cn-shenzhen.aliyuncs.com/deps}"
+: "${NIMO_DEPS_BASE:=https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/deps}"
 # 各组件默认版本(可被环境变量覆盖,如 STACK_VERSION_PARSER)
 : "${STACK_VERSION:=v1.9.1-alpha1}"
 

@@ -51,7 +51,7 @@ if [[ -f "${SCRIPT_DIR}/lib/stack-fetch.sh" ]]; then
     # shellcheck source=lib/stack-fetch.sh
     source "${SCRIPT_DIR}/lib/stack-fetch.sh"
 fi
-: "${NIMO_DEPS_BASE:=https://nimoos.oss-cn-shenzhen.aliyuncs.com/deps}"
+: "${NIMO_DEPS_BASE:=https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/deps}"
 
 readonly SERVICE_FILE="qdrant.service"
 readonly UNIT_DST="/usr/lib/systemd/system/${SERVICE_FILE}"

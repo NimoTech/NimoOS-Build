@@ -110,7 +110,7 @@ selected() { # selected <key>
 # ---------------------------------------------------------------------------
 # bootstrap:standalone(curl|bash)运行时本地没有兄弟脚本,从 OSS 拉取
 # ---------------------------------------------------------------------------
-: "${NIMO_SCRIPTS_BASE:=https://nimoos.oss-cn-shenzhen.aliyuncs.com/get/scripts}"
+: "${NIMO_SCRIPTS_BASE:=https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/get/scripts}"
 bootstrap_scripts() {
     [[ -f "${SCRIPT_DIR}/install-qdrant.sh" && -f "${SCRIPT_DIR}/lib/stack-fetch.sh" ]] && return 0
     local boot; boot="$(mktemp -d)"
