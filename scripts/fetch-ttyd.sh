@@ -11,12 +11,14 @@ declare -A ASSET=(
   [armv7]="ttyd.arm"
 )
 name="${ASSET[$ARCH]:?unknown arch $ARCH}"
-# Prefer the NimoOS mirror, fall back to GitHub
-OSS_URL="${NIMO_OSS_BASE:-https://get.nimoos.example/ttyd}/${TTYD_VERSION}/${name}"
+# Prefer the NimoOS mirror, fall back to GitHub. NIMO_TTYD_BASE overrides the
+# mirror; NIMO_OSS_BASE is the former name and is still honoured.
+MIRROR_BASE="${NIMO_TTYD_BASE:-${NIMO_OSS_BASE:-https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/ttyd}}"
+MIRROR_URL="${MIRROR_BASE}/${TTYD_VERSION}/${name}"
 GH_URL="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${name}"
 mkdir -p "$(dirname "$DEST")"
-if curl -fsSL "$OSS_URL" -o "$DEST" 2>/dev/null; then
-  echo "fetched ttyd from OSS: $OSS_URL"
+if curl -fsSL "$MIRROR_URL" -o "$DEST" 2>/dev/null; then
+  echo "fetched ttyd from the mirror: $MIRROR_URL"
 elif curl -fsSL "$GH_URL" -o "$DEST"; then
   echo "fetched ttyd from GitHub: $GH_URL"
 else

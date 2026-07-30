@@ -183,15 +183,19 @@ exist_file() {
 
 
 
-# 0 Get download url domain
-# To solve the problem that Chinese users cannot access github.
+# 0 Download domain and region
+#
+# The download domain is the same worldwide — one bucket behind one CDN — so
+# unlike upstream CasaOS there is no per-region artifact host to choose.
+#
+# REGION is still detected, but only to pick Docker's own package mirror during
+# Install_Docker; it does not affect where NimoOS artifacts come from.
 Get_Download_Url_Domain() {
-    # Use ipconfig.io/country and https://ifconfig.io/country_code to get the country code
+    # ipconfig.io/country and ifconfig.io/country_code report the country code
     REGION=$(${sudo_cmd} curl --connect-timeout 2 -s ipconfig.io/country || echo "")
     if [ "${REGION}" = "" ]; then
        REGION=$(${sudo_cmd} curl --connect-timeout 2 -s https://ifconfig.io/country_code || echo "")
     fi
-    # Force use aliyun oss
     NIMO_DOWNLOAD_DOMAIN="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/"
 }
 
@@ -473,8 +477,11 @@ Install_Docker() {
         ${sudo_cmd} mkdir -p "${PREFIX}/etc/apt/sources.list.d"
     fi
     GreyStart
+    # Always fetch the installer from Docker's own domain. The official script
+    # takes --mirror itself, so a China mirror needs no third-party host; this
+    # used to curl a domain nobody here controls straight into root's shell.
     if [[ "${REGION}" = "China" ]] || [[ "${REGION}" = "CN" ]]; then
-        ${sudo_cmd} curl -fsSL https://play.cuse.eu.org/get_docker.sh | bash -s docker --mirror Aliyun
+        ${sudo_cmd} curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
     else
         ${sudo_cmd} curl -fsSL https://get.docker.com | bash
     fi

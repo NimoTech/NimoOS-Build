@@ -1,38 +1,59 @@
 #!/bin/bash
-# NimoOS 仓库批量克隆脚本
-# 在另一台电脑上运行此脚本来克隆所有仓库(与 monorepo 目录结构一致)。
-# 单个仓库失败不中断,末尾汇总;已存在的目录跳过(可重复运行)。
+# Clone every NimoOS repository, laid out the way a build expects.
 #
-# 用法: ./clone_all.sh [目标目录]   (默认 ~/nimo_os)
+# Each Go service has a `replace` directive pointing at ../NimoOS-Common, so the
+# repositories must be siblings of one another. By default they are cloned next
+# to this checkout of NimoOS-Build, which produces exactly that layout; pass a
+# different directory to override.
+#
+# A failed clone does not stop the run — failures are summarised at the end, and
+# directories that already exist are skipped, so the script is safe to re-run.
+#
+# Usage: ./clone_all.sh [target-directory]
+#
+# Cloning over HTTPS by default means no SSH key is needed. Set NIMO_GIT_SSH=1
+# to use git@github.com instead, which is what you want when pushing.
 
-DEST_DIR="${1:-$HOME/nimo_os}"
+# Default to the parent of this checkout, so the repositories end up as siblings.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+DEST_DIR="${1:-$(dirname "${SELF_DIR}")}"
 mkdir -p "$DEST_DIR"
-cd "$DEST_DIR" || { echo "无法进入 $DEST_DIR"; exit 1; }
+cd "$DEST_DIR" || { echo "cannot enter $DEST_DIR"; exit 1; }
 
-echo "克隆目标目录: $DEST_DIR"
+if [ "${NIMO_GIT_SSH:-0}" = "1" ]; then
+    GIT_BASE="git@github.com:NimoTech"
+else
+    GIT_BASE="https://github.com/NimoTech"
+fi
+
+echo "cloning into: $DEST_DIR"
+echo "remote base:  $GIT_BASE"
 echo ""
 
-# NimoTech 组织下的仓库(顺序无关;NimoOS-get 克隆到 get 目录)
-# 每行: <仓库名> [目标目录名]
+# Repositories under the NimoTech organisation. Order does not matter.
+# Each line is: <repository> [target-directory]
 NIMOTECH_REPOS=(
-    "NimoOS"                # 核心:文件管理/系统监控/Samba/云存储挂载
-    "NimoOS-Gateway"        # API 网关(唯一对外入口)
-    "NimoOS-MessageBus"     # 服务间 pub/sub + WebSocket
-    "NimoOS-UserService"    # 用户/JWT/JWKS
-    "NimoOS-LocalStorage"   # 磁盘/MergerFS/USB
-    "NimoOS-AppManagement"  # Docker Compose 应用 + AppStore
-    "NimoOS-AI"             # LLM 路由 + Python Agent + 对外 MCP server
-    "NimoOS-Search"         # RAG 检索 API
-    "NimoOS-Wiki"           # 可见长期记忆(.wiki.md)
-    "NimoOS-Photos"         # 相册(EXIF/缩略图/本地向量)
-    "NimoOS-Parser"         # Python 索引服务(docling + 嵌入 → Qdrant)
-    "NimoOS-AppStore"       # AppStore 应用清单与缓存(数据仓库)
-    "NimoOS-Terminal"       # 面板内置远程 Web 终端(ttyd + tmux + 薄 Go 服务)
-    "NimoOS-Common"         # 共享库:JWT/zap/HTTP/服务间 SDK
-    "NimoOS-CLI"            # Cobra CLI 管理/诊断工具
+    "NimoOS"                # core: file management, system monitoring, Samba, cloud storage mounts
+    "NimoOS-Gateway"        # API gateway, the only externally reachable entry point
+    "NimoOS-MessageBus"     # inter-service pub/sub plus WebSocket
+    "NimoOS-UserService"    # users, JWT, JWKS
+    "NimoOS-LocalStorage"   # disks, MergerFS, USB
+    "NimoOS-AppManagement"  # Docker Compose apps and the AppStore
+    "NimoOS-AI"             # LLM routing, the Python agent, the outward-facing MCP server
+    "NimoOS-Search"         # RAG retrieval API
+    "NimoOS-Wiki"           # visible long-term memory (.wiki.md)
+    "NimoOS-Photos"         # albums: EXIF, thumbnails, local vectors
+    "NimoOS-Parser"         # Python indexing service (docling plus embeddings into Qdrant)
+    "NimoOS-AppStore"       # AppStore manifests and cache (a data repository)
+    "NimoOS-Terminal"       # the built-in web terminal (ttyd, tmux, a thin Go service)
+    "NimoOS-Common"         # shared library: JWT, zap, HTTP, inter-service SDK
+    "NimoOS-CLI"            # Cobra CLI for administration and diagnostics
     "NimoOS-UI"             # Vue 2 SPA
-    "NimoOS-get get"        # 一键安装脚本(克隆到 get/)
+    "NimoOS-get get"        # one-line installer scripts (cloned into get/)
 )
+
+# Not cloned: nimo_os_docs is an internal documentation repository and is
+# private. Nothing here depends on it — a build needs only the repositories above.
 
 success=0
 failed=0
@@ -42,35 +63,30 @@ failed_list=()
 clone_repo() {
     local url="$1" dir="$2"
     if [ -d "$dir/.git" ]; then
-        echo "跳过(已存在): $dir"
+        echo "skipping (already present): $dir"
         skipped=$((skipped + 1))
         return
     fi
-    echo ">>> 克隆 $dir"
+    echo ">>> cloning $dir"
     if git clone "$url" "$dir"; then
         success=$((success + 1))
     else
-        echo "[ERROR] 克隆失败: $url"
+        echo "[ERROR] clone failed: $url"
         failed=$((failed + 1))
         failed_list+=("$dir")
     fi
     echo ""
 }
 
-# 文档仓库(个人仓)
-# nimo_os_docs 是内部文档仓(私有), 外部贡献者无需也无法克隆 —— 构建不依赖它
-# clone_repo "git@github.com:leihaowen/nimo_os_docs.git" "nimo_os_docs"
-
-# NimoTech 仓库
 for entry in "${NIMOTECH_REPOS[@]}"; do
-    repo="${entry%% *}"                       # 第一段:仓库名
-    dir="${entry#* }"; [ "$dir" = "$entry" ] && dir="$repo"   # 第二段:目标目录名(缺省=仓库名)
-    clone_repo "git@github.com:NimoTech/${repo}.git" "$dir"
+    repo="${entry%% *}"                       # first field: repository name
+    dir="${entry#* }"; [ "$dir" = "$entry" ] && dir="$repo"   # second field: target directory, defaulting to the repository name
+    clone_repo "${GIT_BASE}/${repo}.git" "$dir"
 done
 
 echo ""
-echo "全部克隆完成! 成功 $success, 跳过 $skipped, 失败 $failed"
-[ "$failed" -gt 0 ] && echo "失败仓库: ${failed_list[*]}"
+echo "Done. $success cloned, $skipped skipped, $failed failed."
+[ "$failed" -gt 0 ] && echo "failed: ${failed_list[*]}"
 echo ""
-echo "目录结构:"
+echo "Layout:"
 ls -1 "$DEST_DIR"

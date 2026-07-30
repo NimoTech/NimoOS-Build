@@ -1,10 +1,10 @@
 #!/bin/bash
-# 后端服务一键构建+部署+重启
-# 用法: ./deploy.sh <service>
-# 可用服务: nimoos | gateway | message-bus | user-service | local-storage | app-management | ai | wiki | search | photos | terminal
+# Build, deploy and restart one backend service.
+# Usage: ./deploy.sh <service>
+# Services: nimoos | gateway | message-bus | user-service | local-storage | app-management | ai | wiki | search | photos | terminal
 set -euo pipefail
 
-# Claude Code Stop hook 的 PATH 不含 /usr/local/go/bin，显式补上。
+# The Claude Code Stop hook runs with a PATH that omits /usr/local/go/bin, so add it explicitly.
 export PATH="/usr/local/go/bin:$PATH"
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -54,8 +54,9 @@ declare -A SERVICE_SYSTEMD=(
   ["terminal"]="nimoos-terminal.service"
 )
 
-# nimoos 依赖 SQLite (CGO)，ai 依赖 go-systemd (CGO)，wiki 依赖 SQLite+go-systemd (CGO)，
-# photos 依赖 SQLite+sqlite-vec (CGO，需系统 sqlite3.h)，其余纯 Go
+# nimoos needs SQLite (CGO), ai needs go-systemd (CGO), wiki needs both
+# SQLite and go-systemd (CGO), photos needs SQLite plus sqlite-vec (CGO, and the
+# system sqlite3.h). Everything else is pure Go.
 declare -A SERVICE_CGO=(
   ["nimoos"]="1"
   ["gateway"]="0"
@@ -73,14 +74,14 @@ declare -A SERVICE_CGO=(
 SERVICE="${1:-}"
 
 if [[ -z "$SERVICE" ]]; then
-  echo "用法: $0 <service>"
-  echo "可用服务: ${!SERVICE_DIR[*]}"
+  echo "Usage: $0 <service>"
+  echo "Services: ${!SERVICE_DIR[*]}"
   exit 1
 fi
 
 if [[ -z "${SERVICE_DIR[$SERVICE]+x}" ]]; then
-  echo "未知服务: $SERVICE"
-  echo "可用服务: ${!SERVICE_DIR[*]}"
+  echo "Unknown service: $SERVICE"
+  echo "Services: ${!SERVICE_DIR[*]}"
   exit 1
 fi
 
@@ -89,22 +90,22 @@ BINARY="${SERVICE_BINARY[$SERVICE]}"
 SYSTEMD="${SERVICE_SYSTEMD[$SERVICE]}"
 CGO="${SERVICE_CGO[$SERVICE]}"
 
-echo "==> [1/3] 构建 $SERVICE ..."
+echo "==> [1/3] building $SERVICE ..."
 cd "$DIR"
-FULL_VERSION="$(resolve_full_version)"   # 在 $DIR 内取本地 git sha
+FULL_VERSION="$(resolve_full_version)"   # reads the local git sha from inside $DIR
 SYM="${GO_VERSION_SYM[$SERVICE]:-}"
 [ -n "$SYM" ] || { echo "no version symbol for service '$SERVICE' (add to GO_VERSION_SYM)"; exit 1; }
 echo "    version: ${FULL_VERSION} (-X ${SYM})"
 CGO_ENABLED=$CGO go build -ldflags "-X ${SYM}=${FULL_VERSION}" -o "./$BINARY" .
 
-echo "==> [2/3] 停止 $SYSTEMD 并部署 /usr/bin/$BINARY ..."
+echo "==> [2/3] stopping $SYSTEMD and installing /usr/bin/$BINARY ..."
 sudo systemctl stop "$SYSTEMD"
 sudo cp "./$BINARY" "/usr/bin/$BINARY"
 
-echo "==> [3/3] 启动 $SYSTEMD ..."
-sudo systemctl enable "$SYSTEMD" 2>/dev/null || true   # 确保开机自启(新服务默认未 enable)
+echo "==> [3/3] starting $SYSTEMD ..."
+sudo systemctl enable "$SYSTEMD" 2>/dev/null || true   # a freshly added service is not enabled by default
 sudo systemctl start "$SYSTEMD"
 
 echo ""
-echo "完成! $SERVICE 已重启。状态:"
+echo "Done. $SERVICE restarted. Status:"
 sudo systemctl status "$SYSTEMD" --no-pager -l --lines=8

@@ -18,9 +18,13 @@
 # by default, which is the usual way object storage leaks. With OAC the only
 # reader is CloudFront, and the policy names that distribution explicitly.
 #
-# Cache behaviour, driven by how long each kind of object lives:
+# Cache behaviour, driven by how long each kind of object lives. The TTL comes
+# from the Cache-Control header set at upload time, not from the distribution:
 #   get/*   install scripts, rewritten in place  -> max-age=300, invalidate
 #   others  versioned artifacts, never rewritten -> max-age=31536000, immutable
+# Both behaviours therefore use the managed CachingOptimized policy, which honours
+# origin Cache-Control. get/* is split out as its own behaviour so invalidations
+# and any future TTL change can target install scripts without touching artifacts.
 # Because artifact keys contain the version, a new release is always a new key
 # and needs no invalidation at all.
 #
@@ -135,10 +139,14 @@ else
     ok "bucket created"
 fi
 
+# All four blocks stay on. The OAC grant in step 4 names a service principal
+# (cloudfront.amazonaws.com) restricted by SourceArn, which S3 does not classify
+# as public, so BlockPublicPolicy does not stand in its way. Leaving those two
+# switches off would only make a later accidentally-public policy possible.
 run s3api put-public-access-block --bucket "${S3_BUCKET}" \
     --public-access-block-configuration \
-    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false"
-ok "public ACLs blocked (bucket policy still allowed, for the OAC grant)"
+    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+ok "public access fully blocked (OAC is the only read path)"
 
 # ---------------------------------------------------------------------------
 # 2) Origin Access Control — lets exactly one distribution read the bucket
@@ -181,8 +189,9 @@ if [ "${DIST_ID}" != "None" ] && [ -n "${DIST_ID}" ]; then
 else
     ORIGIN_DOMAIN="${S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com"
     CFG="$(mktemp)"
-    # CachingOptimized and CachingDisabled are AWS managed policies; using them
-    # avoids hand-rolling TTLs that then drift from the Cache-Control we upload.
+    # 658327ea-... is the AWS managed CachingOptimized policy. Using it rather
+    # than hand-rolled TTLs keeps the distribution from drifting away from the
+    # Cache-Control headers the upload scripts already set per object.
     cat > "${CFG}" <<JSON
 {
   "CallerReference": "nimoos-${S3_BUCKET}-$(date -u +%Y%m%d%H%M%S 2>/dev/null || echo manual)",

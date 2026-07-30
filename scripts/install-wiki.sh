@@ -71,15 +71,15 @@ log_fail()  { echo -e "\e[31m[FAILED]\e[0m $*"; exit 1; }
 ###############################################################################
 
 acquire() {
-    log_info "Resolving artifact (local source preferred, else OSS ${VERSION})..."
+    log_info "Resolving artifact (local source preferred, else download ${VERSION})..."
     set +e
     RESOLVED="$(stack_resolve "${WIKI_SRC_DEFAULT}" "${PROJECT}" "${VERSION}" "${ARCH_MODE}" "${TOKEN}")"
     local rc=$?
     set -e
     case "${rc}" in
         0)  MODE="source" ;;
-        10) MODE="oss" ;;
-        *)  log_fail "Artifact fetch failed: no local source and OSS download failed" ;;
+        10) MODE="download" ;;
+        *)  log_fail "Artifact fetch failed: no local source and the download failed" ;;
     esac
     SYSROOT="${RESOLVED}/build/sysroot"
     CONF_SAMPLE_SRC="${SYSROOT}/etc/nimoos/${APP_NAME_SHORT}.conf.sample"
@@ -90,10 +90,10 @@ acquire() {
 }
 
 build_or_locate_binary() {
-    if [[ "${MODE}" == "oss" ]]; then
+    if [[ "${MODE}" == "download" ]]; then
         BIN_SRC="${SYSROOT}/usr/bin/${APP_NAME}"
-        [[ -f "${BIN_SRC}" ]] || log_fail "OSS package missing prebuilt binary: ${BIN_SRC}"
-        log_ok "Using prebuilt binary from OSS"
+        [[ -f "${BIN_SRC}" ]] || log_fail "Release package missing prebuilt binary: ${BIN_SRC}"
+        log_ok "Using the prebuilt binary from the release package"
         return
     fi
     log_info "Source mode: building ${APP_NAME} (CGO=1)..."
