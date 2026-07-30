@@ -573,9 +573,10 @@ Install_Ollama() {
   Show 0 "Ollama installed."
 }
 
-# 终端组件(nimoos-terminal)依赖:tmux + ttyd。
-# tmux 走 apt(真彩色需 >= 3.2,Debian 11+/trixie 均满足);ttyd 按架构拉取
-# (缺失则拉:OSS 优先、GitHub 兜底),放 /usr/lib/nimoos/ttyd。幂等:已装则跳过。
+# The terminal component depends on tmux and ttyd.
+# tmux comes from apt (true colour needs >= 3.2, satisfied by Debian 11+);
+# ttyd is fetched per architecture (mirror first, GitHub as a fallback) into
+# /usr/lib/nimoos/ttyd. Idempotent: skipped when already present.
 Install_Terminal_Deps() {
     if ! command -v tmux >/dev/null 2>&1; then
         Show 2 "Installing tmux (terminal dependency)..."
@@ -604,8 +605,9 @@ Install_Terminal_Deps() {
     fi
 }
 
-# nimoos-agent 现以离线 Docker 容器部署(见 install-ai.sh / nimoos-stack-install.sh),
-# 由下方 Install_Stack 步骤经栈安装拉起,不再在核心安装阶段建 host venv。
+# nimoos-agent now ships as an offline Docker container (see install-ai.sh and
+# nimoos-stack-install.sh) brought up by Install_Stack below, so the core
+# install no longer builds a host venv.
 
 #Configuration Addons
 Configuration_Addons() {
@@ -720,8 +722,9 @@ DownloadAndInstallNimoOS() {
     GreyStart
     find "${SYSROOT_DIR}" -type f | ${sudo_cmd} cut -c ${#SYSROOT_DIR}- | ${sudo_cmd} cut -c 2- | ${sudo_cmd} tee "${MANIFEST_FILE}" >/dev/null || Show 1 "Failed to create manifest file"
 
-    # 用 tar 铺到 / 而非 cp -rf:usrmerge 系统上 /lib /bin /sbin 是指向 /usr/* 的符号链接,
-    # cp -rf 会因"用目录覆盖符号链接"失败;tar --keep-directory-symlink 会顺着符号链接合并进 /usr。
+    # Use tar rather than cp -rf: on usrmerge systems /lib, /bin and /sbin are
+    # symlinks into /usr/*, so cp -rf fails replacing a symlink with a
+    # directory; tar --keep-directory-symlink follows them and merges into /usr.
     ${sudo_cmd} tar -cf - -C "${SYSROOT_DIR}" . | ${sudo_cmd} tar -C / --keep-directory-symlink -xf - \
         || Show 1 "Failed to install NimoOS"
     ${sudo_cmd} systemctl daemon-reload || Show 3 "systemd daemon-reload failed (non-fatal)."
@@ -768,12 +771,12 @@ DownloadAndInstallNimoOS() {
     Install_Rclone
     Install_Ollama
     Install_Terminal_Deps
-    # nimoos-agent 由 Install_Stack(install-ai.sh)以 Docker 容器部署,核心阶段不再建 venv
+    # Install_Stack deploys nimoos-agent as a container; no venv here
 
     for SERVICE in "${NIMO_SERVICES[@]}"; do
         Show 2 "Starting ${SERVICE}..."
         GreyStart
-        ${sudo_cmd} systemctl enable "${SERVICE}" 2>/dev/null || true   # 开机自启(新服务默认未 enable)
+        ${sudo_cmd} systemctl enable "${SERVICE}" 2>/dev/null || true   # enable at boot; new services are not enabled by default
         ${sudo_cmd} systemctl start "${SERVICE}" || Show 3 "Service ${SERVICE} does not exist."
         ColorReset
     done
@@ -832,8 +835,9 @@ Welcome_Banner() {
 }
 
 # Install retrieval / AI stack (qdrant/parser/search/wiki/photos/ai) in one go
-# 用自包含的 nimoos-stack-install.sh(从 OSS 拉取),避免用户再跑第二个脚本。
-# 设 NIMO_SKIP_STACK=1 可跳过(栈较重:Python venv + 模型 + Ollama)。
+# Use the self-contained nimoos-stack-install.sh so the user does not have to
+# run a second script. Set NIMO_SKIP_STACK=1 to skip it; the stack is heavy
+# (Python venv, models, Ollama).
 Install_Stack() {
     if [[ "${NIMO_SKIP_STACK:-0}" == "1" ]]; then
         Show 3 "Skipping retrieval/AI stack (NIMO_SKIP_STACK=1)."
@@ -848,7 +852,7 @@ Install_Stack() {
         Show 3 "Failed to download stack installer (${stack_url}), skipping stack."
         return
     fi
-    # 非致命:栈安装失败不影响已装好的核心
+    # Non-fatal: a stack failure does not affect the installed core
     ${sudo_cmd} bash "${stack_sh}" --start --continue \
         || Show 3 "Stack install reported errors (non-fatal); core NimoOS is installed."
 }

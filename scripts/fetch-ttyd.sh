@@ -1,8 +1,8 @@
 #!/bin/bash
-# 用法: fetch-ttyd.sh <arch> <dest-path>
-# arch ∈ {amd64, arm64, armv7};dest 为目标文件(如 /usr/lib/nimoos/ttyd)
+# Usage: fetch-ttyd.sh <arch> <dest-path>
+# arch is one of amd64, arm64, armv7; dest is the target file path
 set -euo pipefail
-TTYD_VERSION="1.7.7"   # pin;实现时确认最新稳定 tag(见 spec §10)
+TTYD_VERSION="1.7.7"   # pinned; check for a newer stable tag when bumping
 ARCH="${1:?arch required}"
 DEST="${2:?dest required}"
 declare -A ASSET=(
@@ -11,7 +11,7 @@ declare -A ASSET=(
   [armv7]="ttyd.arm"
 )
 name="${ASSET[$ARCH]:?unknown arch $ARCH}"
-# 优先 NimoOS OSS 镜像,回退 GitHub
+# Prefer the NimoOS mirror, fall back to GitHub
 OSS_URL="${NIMO_OSS_BASE:-https://get.nimoos.example/ttyd}/${TTYD_VERSION}/${name}"
 GH_URL="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${name}"
 mkdir -p "$(dirname "$DEST")"

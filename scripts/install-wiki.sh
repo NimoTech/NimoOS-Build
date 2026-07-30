@@ -40,14 +40,14 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/stack-fetch.sh
 source "${SCRIPT_DIR}/lib/stack-fetch.sh"
 
-# release 坐标(无源码时从 OSS 拉 linux-<arch>-<token>-<ver>.tar.gz)
+# Release coordinates; without a source tree the tarball is fetched instead
 readonly PROJECT="NimoOS-Wiki"
 readonly TOKEN="nimoos-wiki"
 readonly ARCH_MODE="arch"
 readonly VERSION="${STACK_VERSION_WIKI:-${STACK_VERSION}}"
 readonly WIKI_SRC_DEFAULT="$(cd "${SCRIPT_DIR}/../../NimoOS-Wiki" 2>/dev/null && pwd || true)"
 
-# 由 acquire() 填充
+# populated by acquire()
 RESOLVED=""; MODE=""; SYSROOT=""; CONF_SAMPLE_SRC=""; UNIT_SRC=""; BIN_SRC=""
 
 readonly CONF_PATH="/etc/nimoos"
@@ -124,8 +124,10 @@ install_conf() {
 
 install_binary() {
     log_info "Installing binary to ${BIN_DST}..."
-    # 用临时文件 + mv(rename)替换: 直接 cp 覆盖【正在运行】的二进制会 "Text file busy"(ETXTBSY);
-    # rename 只换目录项、不动正在执行的旧 inode, 新二进制就位后由 maybe_start 重启加载。
+    # Replace via a temp file and rename: cp over a RUNNING binary fails with
+    # "Text file busy" (ETXTBSY).
+    # rename only swaps the directory entry and leaves the executing inode
+    # alone; maybe_start then restarts to load the new build.
     local _tmp="${BIN_DST}.new.$$"
     ${sudo_cmd} cp -f "${BIN_SRC}" "${_tmp}"
     ${sudo_cmd} chmod 0755 "${_tmp}"
@@ -142,8 +144,10 @@ install_unit() {
 
 maybe_start() {
     if ${sudo_cmd} systemctl is-active --quiet "${SERVICE_FILE}"; then
-        # 已在运行(升级场景): 必须 restart 以加载新二进制(start 对已运行服务是 no-op → 会继续跑旧代码)
-        log_info "重启 ${SERVICE_FILE} 以加载新版本 ..."
+        # Already running (an upgrade): restart is required to load the new
+        # binary — start is a no-op for a running service and would keep the
+        # old code running
+        log_info "restarting ${SERVICE_FILE} to load the new build ..."
         ${sudo_cmd} systemctl restart "${SERVICE_FILE}"
         sleep 1
         ${sudo_cmd} systemctl status "${SERVICE_FILE}" --no-pager -l --lines=10 || true
