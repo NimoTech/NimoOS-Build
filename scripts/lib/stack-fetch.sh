@@ -11,13 +11,13 @@
 # version across every component.
 
 # Downloads come from the same domain that release/versions.conf uploads to.
-: "${NIMO_DOWNLOAD_DOMAIN:=https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/}"
+: "${NIMO_DOWNLOAD_DOMAIN:=https://nimoos-public.s3.us-east-2.amazonaws.com/}"
 # Third-party dependencies (the official qdrant, ollama and similar binaries) are
 # mirrored under deps/ so machines with no direct route to github.com or
 # ollama.com can still install. Layout:
 #   ${NIMO_DEPS_BASE}/qdrant/qdrant-<arch>.tar.gz
 #   ${NIMO_DEPS_BASE}/ollama/ollama-linux-<arch>.tar.zst
-: "${NIMO_DEPS_BASE:=https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/deps}"
+: "${NIMO_DEPS_BASE:=https://nimoos-public.s3.us-east-2.amazonaws.com/deps}"
 
 # release/versions.conf is the single source of truth for both the version and the
 # key prefix, so read them from it when this library sits inside a checkout. Run

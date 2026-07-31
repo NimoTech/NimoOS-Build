@@ -120,7 +120,7 @@ selected() { # selected <key>
 # Bootstrap: run standalone via `curl | bash` there are no sibling scripts on
 # disk, so fetch them from the download mirror.
 # ---------------------------------------------------------------------------
-: "${NIMO_SCRIPTS_BASE:=https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/get/scripts}"
+: "${NIMO_SCRIPTS_BASE:=https://nimoos-public.s3.us-east-2.amazonaws.com/get/scripts}"
 bootstrap_scripts() {
     [[ -f "${SCRIPT_DIR}/install-qdrant.sh" && -f "${SCRIPT_DIR}/lib/stack-fetch.sh" ]] && return 0
     local boot; boot="$(mktemp -d)"

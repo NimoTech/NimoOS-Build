@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 #
-#           NimoOS Installer Script v0.4.16#
+#           NimoOS Installer Script v0.4.17#
 #   GitHub: https://github.com/NimoTech/NimoOS
 #   Issues: https://github.com/NimoTech/NimoOS/issues
 #   Requires: bash, mv, rm, tr, grep, sed, curl/wget, tar, smartmontools, parted, ntfs-3g, net-tools
@@ -8,9 +8,9 @@
 #   This script installs NimoOS to your system.
 #   Usage:
 #
-#   	$ wget -qO- https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
+#   	$ wget -qO- https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 #   	  or
-#   	$ curl -fsSL https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
+#   	$ curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 #
 #   In automated environments, you may want to run as root.
 #   If using curl, we recommend using the -fsSL flags.
@@ -75,7 +75,7 @@ UNAME_U="$(uname -s)"
 readonly UNAME_U
 
 readonly NIMO_CONF_PATH=/etc/nimoos/gateway.ini
-readonly NIMO_UNINSTALL_URL="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/get/nimoos-uninstall-v0.4.17.sh"
+readonly NIMO_UNINSTALL_URL="https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-uninstall-v0.4.17.sh"
 readonly NIMO_UNINSTALL_PATH=/usr/bin/nimoos-uninstall
 
 # REQUIREMENTS CONF PATH
@@ -101,7 +101,7 @@ readonly GREEN_SEPARATOR="${aCOLOUR[0]}:$COLOUR_RESET"
 TARGET_ARCH=""
 TMP_ROOT=/tmp/nimoos-installer
 REGION="UNKNOWN"
-NIMO_DOWNLOAD_DOMAIN="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/"
+NIMO_DOWNLOAD_DOMAIN="https://nimoos-public.s3.us-east-2.amazonaws.com/"
 
 trap 'onCtrlC' INT
 onCtrlC() {
@@ -196,7 +196,7 @@ Get_Download_Url_Domain() {
     if [ "${REGION}" = "" ]; then
        REGION=$(${sudo_cmd} curl --connect-timeout 2 -s https://ifconfig.io/country_code || echo "")
     fi
-    NIMO_DOWNLOAD_DOMAIN="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/"
+    NIMO_DOWNLOAD_DOMAIN="https://nimoos-public.s3.us-east-2.amazonaws.com/"
 }
 
 # 1 Check Arch
