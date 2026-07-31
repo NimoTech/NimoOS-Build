@@ -52,7 +52,7 @@ fi
 if [ -z "${NIMO_KEY_PREFIX:-}" ] && [ -z "${NIMO_OSS_PREFIX:-}" ]; then
     NIMO_KEY_PREFIX="$(_sf_conf_value S3_PREFIX)"
 fi
-: "${NIMO_KEY_PREFIX:=${NIMO_OSS_PREFIX:-releases}}"
+: "${NIMO_KEY_PREFIX:=${NIMO_OSS_PREFIX:-nimoos}}"
 
 # uname -m -> the architecture token used in release file names
 stack_arch() {

@@ -75,7 +75,7 @@ UNAME_U="$(uname -s)"
 readonly UNAME_U
 
 readonly NIMO_CONF_PATH=/etc/nimoos/gateway.ini
-readonly NIMO_UNINSTALL_URL="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/uninstall/v0.4.17"
+readonly NIMO_UNINSTALL_URL="https://nimoos-s3-bucket.s3.us-east-2.amazonaws.com/get/nimoos-uninstall-v0.4.17.sh"
 readonly NIMO_UNINSTALL_PATH=/usr/bin/nimoos-uninstall
 
 # REQUIREMENTS CONF PATH
@@ -218,20 +218,20 @@ Check_Arch() {
     esac
     Show 0 "Your hardware architecture is : $UNAME_M"
     NIMO_PACKAGES=(
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Gateway/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-gateway-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-MessageBus/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-message-bus-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-UserService/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-user-service-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-LocalStorage/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-local-storage-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-AppManagement/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-app-management-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-CLI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-cli-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-UI/releases/download/v1.9.4-alpha1/linux-all-nimoos-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-AppStore/releases/download/v1.0.9/linux-all-appstore-v1.0.9.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-AI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-ai-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Wiki/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-wiki-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Search/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-search-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Photos/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-photos-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}releases/NimoOS-Terminal/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-terminal-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Gateway/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-gateway-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-MessageBus/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-message-bus-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-UserService/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-user-service-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-LocalStorage/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-local-storage-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-AppManagement/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-app-management-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-CLI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-cli-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-UI/releases/download/v1.9.4-alpha1/linux-all-nimoos-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-AppStore/releases/download/v1.0.9/linux-all-appstore-v1.0.9.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-AI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-ai-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Wiki/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-wiki-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Search/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-search-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Photos/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-photos-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Terminal/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-terminal-v1.9.4-alpha1.tar.gz"
     )
 }
 
@@ -758,10 +758,13 @@ DownloadAndInstallNimoOS() {
         ${sudo_cmd} chmod +x $UI_EVENTS_REG_SCRIPT
     fi
     
-    # Modify app store configuration
-    if [[ -f "$PREFIX/etc/nimoos/app-management.conf" ]]; then
-        sed -i "s#https://github.com/IceWhaleTech/_appstore/#${NIMO_DOWNLOAD_DOMAIN}NimoTech/_appstore/#g" "$PREFIX/etc/nimoos/app-management.conf"
-    fi
+    # No app store URL rewriting here. This used to sed
+    # https://github.com/IceWhaleTech/_appstore/ into a NimoTech/_appstore/ prefix
+    # on the download domain, but that pattern appears in no conf template we ship
+    # (the sample lists jsDelivr and big-bear URLs instead), and that prefix does
+    # not exist in the bucket. The rewrite was inherited dead code, and leaving it
+    # in place would have pointed the store at a 404 the moment it did match.
+    # The shipped store URLs live in app-management.conf.sample.
 
     #Download Uninstall Script
     if [[ -f $PREFIX/tmp/nimoos-uninstall ]]; then
