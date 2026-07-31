@@ -1,104 +1,103 @@
 # NimoOS-Build
 
-NimoOS 的**构建与安装脚本**，以及**版本单一源** [`release/versions.conf`](./release/versions.conf)。
+Build and install scripts for NimoOS, plus the single version source
+[`release/versions.conf`](./release/versions.conf).
 
-> ### About / 关于本项目
+> ### About
 >
 > NimoOS is a fork of [CasaOS](https://github.com/IceWhaleTech/CasaOS)
 > (Apache-2.0), originally developed by IceWhale Technology Co., Ltd.
-> Building on that foundation, NimoOS adds an AI agent, RAG-based
-> retrieval, a knowledge layer, and a built-in web terminal.
+> Building on that foundation, NimoOS adds an AI agent, RAG-based retrieval,
+> a knowledge layer, and a built-in web terminal.
 >
-> NimoOS 基于 [CasaOS](https://github.com/IceWhaleTech/CasaOS)（Apache-2.0）
-> fork 而来，原始项目由 IceWhale Technology Co., Ltd. 开发。在此基础上，
-> NimoOS 重建了 AI Agent、RAG 检索、知识库与内置终端等能力。
+> See [`NOTICE`](./NOTICE) for attribution details. CasaOS and IceWhale are
+> trademarks of IceWhale Technology Co., Ltd.; NimoOS is an independent
+> project and is not affiliated with IceWhale.
 >
-> 归属详情见 [`NOTICE`](./NOTICE)。CasaOS 与 IceWhale 是 IceWhale Technology
-> Co., Ltd. 的商标；NimoOS 是独立项目，与 IceWhale 无隶属关系。
->
-> 本仓库是 NimoTech 原创，不含 CasaOS 衍生代码。
+> This repository is NimoTech's own work and contains no CasaOS-derived code.
 
 > ⚠️ Multi-user isolation is incomplete — Photos and Search are not yet
 > per-user scoped. Read
 > [SECURITY.md](https://github.com/NimoTech/NimoOS/blob/main/SECURITY.md#known-limitations)
 > before deploying NimoOS for more than one person.
->
-> ⚠️ 多用户隔离尚不完整（Photos 与搜索未按用户隔离）。若要给多人使用，请先阅读
-> [SECURITY.md](https://github.com/NimoTech/NimoOS/blob/main/SECURITY.md#known-limitations)。
 
-## 安装
+## Install
 
 ```bash
-curl -fsSL https://nimoos.oss-cn-shenzhen.aliyuncs.com/get/nimoos-install.sh | sudo bash
+curl -fsSL <download-domain>/get/nimoos-install.sh | sudo bash
 ```
 
-> 下载源在阿里云深圳，国际用户可能较慢。改用 GitHub Releases 分发是已知的
-> 待办项，见 [NimoOS 的 ROADMAP](https://github.com/NimoTech/NimoOS/blob/main/ROADMAP.md)。
-
-AI / RAG 栈（Qdrant、Parser、Ollama）另需一步：
+The AI and RAG stack (Qdrant, Parser, Ollama) is a separate step:
 
 ```bash
 sudo bash scripts/nimoos-stack-install.sh
 ```
 
-## 仓库内容
+## What is in here
 
-| 路径 | 用途 |
+| Path | Purpose |
 |---|---|
-| `release/versions.conf` | **版本单一源**。改这一处，构建期经 ldflags 注入到各服务 |
-| `release/lib/` | 版本注入与组件注册表（`common.sh` / `version_inject.sh`） |
-| `nimoos-install.sh` · `nimoos-update.sh` · `nimoos-uninstall.sh` | 一键装 / 更新 / 卸载 |
-| `scripts/install-*.sh` · `nimoos-stack-install.sh` | 各组件与 AI/RAG 栈安装 |
-| `scripts/deploy*.sh` | 开发用：构建 + 替换二进制 + 重启 systemd 单元 |
-| `scripts/fetch-ttyd.sh` | 内置终端依赖的 ttyd 拉取 |
-| `scripts/start-ai.sh` · `update-host-agent.sh` | AI 服务启停 / host agent 就地更新 |
-| `clone_all.sh` | 批量克隆各服务仓库 |
-| `DEV_DEPLOY.md` | systemd 单元 ↔ 源码对照、替换二进制流程 |
+| `release/versions.conf` | **Single version source.** Change it here; the build injects it into every service via ldflags |
+| `release/lib/` | Version injection and the component registry (`common.sh`, `version_inject.sh`) |
+| `nimoos-install.sh` · `nimoos-update.sh` · `nimoos-uninstall.sh` | Install, update, uninstall |
+| `scripts/install-*.sh` · `nimoos-stack-install.sh` | Per-component and AI/RAG stack installation |
+| `scripts/deploy*.sh` | Development: build, replace the binary, restart the systemd unit |
+| `scripts/fetch-ttyd.sh` | Fetches the ttyd dependency for the built-in terminal |
+| `scripts/start-ai.sh` · `update-host-agent.sh` | AI service start/stop, in-place host agent update |
+| `clone_all.sh` | Clones the service repositories |
+| `DEV_DEPLOY.md` | systemd unit to source mapping, binary replacement procedure |
 
-## 从源码构建
+## Building from source
 
-NimoOS 是多仓结构，各 Go 服务通过 `replace` 指向本地的 `NimoOS-Common`，
-所以**构建需要完整 checkout**：
+NimoOS is a multi-repository project. Every Go service uses a `replace`
+directive pointing at the local `NimoOS-Common` checkout, so **a build needs the
+full workspace**:
 
 ```bash
-bash clone_all.sh          # 克隆各服务仓库到同级目录
+bash clone_all.sh          # clone the service repositories as siblings
 ```
 
-目录布局：
+Expected layout:
 
 ```
 nimoos/
-├── NimoOS-Build/          # 本仓
-├── NimoOS-Common/         # 共享库（其他服务经 replace 指向它）
-├── NimoOS-MessageBus/     # ⚠️ 必须最先 go generate
+├── NimoOS-Build/          # this repository
+├── NimoOS-Common/         # shared library; other services replace to it
+├── NimoOS-MessageBus/     # generate this first
 ├── NimoOS/  NimoOS-Gateway/  NimoOS-UserService/  ...
 └── NimoOS-UI/
 ```
 
-**MessageBus 必须最先生成** —— 它的生成代码不入库，其他服务的 `go generate`
-依赖它的 OpenAPI spec：
+**Generate MessageBus first.** Its generated code is not committed, and every
+other service's `go generate` consumes its OpenAPI spec:
 
 ```bash
 cd NimoOS-MessageBus && go generate ./...
 ```
 
-**CGO 矩阵**：`nimoos`（SQLite）、`ai` / `wiki`（go-systemd）、`photos`
-（SQLite + sqlite-vec，需系统 `sqlite3.h`）需 `CGO_ENABLED=1` + gcc；
-`gateway` / `message-bus` / `user-service` / `local-storage` /
-`app-management` / `search` / `terminal` 是纯 Go。
+**CGO matrix.** `nimoos` (SQLite), `ai` and `wiki` (go-systemd), and `photos`
+(SQLite + sqlite-vec, needs the system `sqlite3.h`) require `CGO_ENABLED=1` and
+gcc. `gateway`, `message-bus`, `user-service`, `local-storage`,
+`app-management`, `search` and `terminal` are pure Go.
 
-**版本钉住**：各 Go 服务钉 `go 1.21` + echo v4.12，**不要跑 `go mod tidy`**。
+**Pinned versions.** Go services pin `go 1.21` and echo v4.12 —
+**do not run `go mod tidy`**, it silently bumps them and breaks builds on
+target machines.
 
-Parser 是 Python 服务，用 `uv` 固定 Python 3.11（`rapidocr-onnxruntime` 无
-3.12+ wheel）。
+Parser is a Python service; use `uv` with Python 3.11 (`rapidocr-onnxruntime`
+has no wheel for 3.12 or later).
 
-## 版本号
+## Versioning
 
-`versions.conf` 里的 `NIMOOS_VERSION` 是唯一手改处。构建期注入格式：
+`NIMOOS_VERSION` in `versions.conf` is the only value you edit by hand.
+Build-time injection produces:
 
-- 发布产物 `<版本>+<build 号>`
-- dev 构建 `<版本>+<build 号>.g<sha>`
+- release artifacts — `<version>+<build>`
+- development builds — `<version>+<build>.g<sha>`
 
-## 许可
+`NIMOOS_VERSION_OVERRIDE` lets a caller pin a different version for one build
+without editing the file.
 
-Apache-2.0，见 [`LICENSE`](./LICENSE)。
+## License
+
+Apache-2.0 — see [`LICENSE`](./LICENSE).

@@ -1,48 +1,56 @@
 #!/usr/bin/env bash
-# nimoos-stack-install.sh — 一键安装 NimoOS 检索 / AI 栈及其依赖
+# nimoos-stack-install.sh — one-shot installer for the NimoOS retrieval / AI stack
 #
-# 按【依赖顺序】编排调用各 install-*.sh:
-#   qdrant → parser → search → wiki → photos → ai
+# Calls each install-*.sh in dependency order:
+#   qdrant -> parser -> search -> wiki -> photos -> ai
 #
-# 每个子脚本自带「双模式」:本机有对应 NimoOS-* 源码就用源码,否则从深圳 OSS
-# 拉对应版本的 release tar(版本由 STACK_VERSION 统一注入)。
+# Every sub-script is dual-mode: it builds from the matching NimoOS-* source tree
+# when one is present on this machine, and otherwise downloads the release
+# tarball for that version. STACK_VERSION selects the version for all of them.
 #
-# 用法:
-#   sudo bash nimoos-stack-install.sh [选项]
+# Usage:
+#   sudo bash nimoos-stack-install.sh [options]
 #
-# 选项:
-#   --start              安装后立即启动支持的服务(parser/search/wiki/photos)
-#   --only a,b,c         只装这些组件(逗号分隔, key 见下)
-#   --skip a,b           跳过这些组件
-#   --version <ver>      指定版本(默认 v1.9.1-alpha1),透传给各子脚本
-#   --continue           某组件失败后继续装后续组件(默认遇错即停)
-#   -h | --help          显示帮助
+# Options:
+#   --start              start the services that support it after installing
+#                        (parser, search, wiki, photos)
+#   --only a,b,c         install only these components (comma separated, keys below)
+#   --skip a,b           skip these components
+#   --version <ver>      version to install, passed through to every sub-script
+#   --continue           keep going after a component fails (default: stop)
+#   -h | --help          show this help
 #
-# 组件 key:qdrant parser search wiki photos ai
+# Component keys: qdrant parser search wiki photos ai
 #
-# 说明:
-#   - qdrant 是检索栈基座,parser/search 依赖它先就绪。
-#   - ai 装 Ollama + Python Agent;装完需 `ollama pull <model>` 再 start-ai.sh。
-#   - Photos 仅装主二进制,AI/ML 后端为单独步骤。
+# Notes:
+#   - qdrant underpins the retrieval stack; parser and search need it up first.
+#   - ai installs Ollama plus the Python agent. Afterwards run
+#     `ollama pull <model>` and then start-ai.sh.
+#   - photos installs only the main binary; its AI/ML backend is a separate step.
 
 set -uo pipefail
 
-# 经 `curl | bash -s` 从 stdin 运行时 BASH_SOURCE 为空,set -u 下会报 unbound;
-# 用 ${BASH_SOURCE[0]:-$0} 兜底(此时无本地子脚本,后续 bootstrap 会从 OSS 拉)。
+# BASH_SOURCE is empty when this runs from stdin via `curl | bash -s`, which
+# trips set -u. Fall back to $0. In that case there are no sibling scripts on
+# disk either, so bootstrap_scripts downloads them below.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "/tmp")"
 
-((EUID)) && sudo_hint="(建议 sudo 运行)" || sudo_hint=""
+((EUID)) && sudo_hint="(running with sudo is recommended)" || sudo_hint=""
 
 # ---------------------------------------------------------------------------
-# 参数
+# Arguments
 # ---------------------------------------------------------------------------
 START=0
 CONTINUE=0
 ONLY=""
 SKIP=""
-export STACK_VERSION="${STACK_VERSION:-v1.9.0-alpha1}"
+# Deliberately not defaulted here. lib/stack-fetch.sh resolves the version from
+# release/versions.conf, which is the single source of truth; a second default in
+# this file went stale by four releases before anyone noticed. Only export when
+# the caller actually asked for a specific version.
+[ -n "${STACK_VERSION:-}" ] && export STACK_VERSION
 
-usage() { sed -n '2,33p' "$0"; exit "${1:-0}"; }
+usage() { sed -n '2,30p' "$0"; exit "${1:-0}"; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -55,12 +63,12 @@ while [[ $# -gt 0 ]]; do
         --version)   export STACK_VERSION="$2"; shift 2 ;;
         --version=*) export STACK_VERSION="${1#*=}"; shift ;;
         -h|--help)   usage 0 ;;
-        *) echo "未知参数: $1 (用 --help 查看)"; exit 1 ;;
+        *) echo "unknown argument: $1 (see --help)"; exit 1 ;;
     esac
 done
 
 # ---------------------------------------------------------------------------
-# 日志
+# Logging
 # ---------------------------------------------------------------------------
 C_RESET='\e[0m'; C_GREEN='\e[32m'; C_YELLOW='\e[33m'; C_RED='\e[31m'; C_CYAN='\e[36m'
 log_info() { echo -e "${C_GREEN}[ INFO ]${C_RESET} $*"; }
@@ -68,8 +76,9 @@ log_warn() { echo -e "${C_YELLOW}[ WARN ]${C_RESET} $*"; }
 log_err()  { echo -e "${C_RED}[FAILED]${C_RESET} $*"; }
 log_step() { echo -e "\n${C_CYAN}========== $* ==========${C_RESET}"; }
 
-# 全程把 stdout/stderr 同时送终端与日志文件,避免安装失败后无从复盘
-# (此前一键安装是静默的,某组件卡死/报错后什么都没留下)。
+# Send stdout and stderr to both the terminal and a log file, so a failed install
+# can be investigated afterwards. This used to be silent, which left nothing
+# behind when a component hung or errored out.
 STACK_LOG=""
 setup_logging() {
     local ts dir
@@ -78,19 +87,19 @@ setup_logging() {
     mkdir -p "${dir}" 2>/dev/null || dir="${TMPDIR:-/tmp}"
     STACK_LOG="${dir}/stack-install-${ts}.log"
     exec > >(tee -a "${STACK_LOG}") 2>&1
-    log_info "完整安装日志:${STACK_LOG}"
+    log_info "full install log: ${STACK_LOG}"
 }
 
 # ---------------------------------------------------------------------------
-# 组件表(依赖顺序): key|脚本|是否支持 --start|描述
+# Components, in dependency order: key|script|supports --start|description
 # ---------------------------------------------------------------------------
 COMPONENTS=(
-    "qdrant|install-qdrant.sh|0|向量库 qdrant(检索栈基座)"
-    "parser|install-parser.sh|1|文档解析 Parser(Python, 依赖 qdrant)"
-    "search|install-search.sh|1|检索 Search(依赖 parser + qdrant)"
-    "wiki|install-wiki.sh|1|Wiki 服务"
-    "photos|install-photos.sh|1|相册 Photos 主服务"
-    "ai|install-ai.sh|0|Ollama + Python Agent"
+    "qdrant|install-qdrant.sh|0|qdrant vector database (foundation of the retrieval stack)"
+    "parser|install-parser.sh|1|document parser (Python, needs qdrant)"
+    "search|install-search.sh|1|search service (needs parser and qdrant)"
+    "wiki|install-wiki.sh|1|wiki service"
+    "photos|install-photos.sh|1|photos main service"
+    "ai|install-ai.sh|0|Ollama plus the Python agent"
 )
 
 in_csv() { # in_csv <needle> <csv>
@@ -108,34 +117,35 @@ selected() { # selected <key>
 }
 
 # ---------------------------------------------------------------------------
-# bootstrap:standalone(curl|bash)运行时本地没有兄弟脚本,从 OSS 拉取
+# Bootstrap: run standalone via `curl | bash` there are no sibling scripts on
+# disk, so fetch them from the download mirror.
 # ---------------------------------------------------------------------------
-: "${NIMO_SCRIPTS_BASE:=https://nimoos.oss-cn-shenzhen.aliyuncs.com/get/scripts}"
+: "${NIMO_SCRIPTS_BASE:=https://nimoos-public.s3.us-east-2.amazonaws.com/get/scripts}"
 bootstrap_scripts() {
     [[ -f "${SCRIPT_DIR}/install-qdrant.sh" && -f "${SCRIPT_DIR}/lib/stack-fetch.sh" ]] && return 0
     local boot; boot="$(mktemp -d)"
     mkdir -p "${boot}/lib"
-    log_info "未发现本地子脚本,从 OSS 拉取(${NIMO_SCRIPTS_BASE})..."
+    log_info "no local sub-scripts found, downloading from ${NIMO_SCRIPTS_BASE} ..."
     local f
     for f in lib/stack-fetch.sh install-qdrant.sh install-parser.sh install-search.sh \
              install-wiki.sh install-photos.sh install-ai.sh start-ai.sh; do
         if ! curl -fsSL "${NIMO_SCRIPTS_BASE}/${f}" -o "${boot}/${f}"; then
-            log_err "下载子脚本失败: ${f}"; rm -rf "${boot}"; exit 1
+            log_err "could not download the sub-script: ${f}"; rm -rf "${boot}"; exit 1
         fi
     done
     SCRIPT_DIR="${boot}"
-    log_info "子脚本已就绪: ${SCRIPT_DIR}"
+    log_info "sub-scripts ready: ${SCRIPT_DIR}"
 }
 
 # ---------------------------------------------------------------------------
-# 主流程
+# Main
 # ---------------------------------------------------------------------------
 setup_logging
 bootstrap_scripts
-log_step "NimoOS 栈安装  ${sudo_hint}"
-log_info "版本: ${STACK_VERSION}   start=${START}  continue=${CONTINUE}"
-[[ -n "${ONLY}" ]] && log_info "仅安装: ${ONLY}"
-[[ -n "${SKIP}" ]] && log_info "跳过:   ${SKIP}"
+log_step "NimoOS stack install  ${sudo_hint}"
+log_info "version: ${STACK_VERSION:-(from release/versions.conf)}   start=${START}  continue=${CONTINUE}"
+[[ -n "${ONLY}" ]] && log_info "installing only: ${ONLY}"
+[[ -n "${SKIP}" ]] && log_info "skipping:        ${SKIP}"
 
 declare -a DONE=() FAILED=() SKIPPED=()
 
@@ -147,12 +157,12 @@ for entry in "${COMPONENTS[@]}"; do
     fi
     local_script="${SCRIPT_DIR}/${script}"
     if [[ ! -f "${local_script}" ]]; then
-        log_err "${key}: 找不到脚本 ${local_script}"
+        log_err "${key}: script not found at ${local_script}"
         FAILED+=("${key}")
-        [[ "${CONTINUE}" == "1" ]] && continue || { log_err "中止(用 --continue 可跳过失败继续)"; break; }
+        [[ "${CONTINUE}" == "1" ]] && continue || { log_err "stopping (pass --continue to carry on past failures)"; break; }
     fi
 
-    # 组装子脚本参数
+    # Assemble the sub-script arguments
     args=()
     [[ "${START}" == "1" && "${supports_start}" == "1" ]] && args+=("--start")
 
@@ -160,31 +170,33 @@ for entry in "${COMPONENTS[@]}"; do
     if bash "${local_script}" "${args[@]}"; then
         DONE+=("${key}")
     else
-        log_err "${key} 安装失败 (exit=$?)"
+        log_err "${key} failed to install (exit=$?)"
         FAILED+=("${key}")
         if [[ "${CONTINUE}" != "1" ]]; then
-            log_err "中止后续安装(用 --continue 可跳过失败继续)"
+            log_err "stopping the remaining installs (pass --continue to carry on past failures)"
             break
         fi
     fi
 done
 
 # ---------------------------------------------------------------------------
-# 汇总
+# Summary
 # ---------------------------------------------------------------------------
-log_step "安装汇总"
-log_info "成功: ${DONE[*]:-(无)}"
-[[ ${#SKIPPED[@]} -gt 0 ]] && log_warn "跳过: ${SKIPPED[*]}"
+log_step "Summary"
+log_info "installed: ${DONE[*]:-(none)}"
+[[ ${#SKIPPED[@]} -gt 0 ]] && log_warn "skipped:   ${SKIPPED[*]}"
 if [[ ${#FAILED[@]} -gt 0 ]]; then
-    log_err "失败: ${FAILED[*]}"
+    log_err "failed:    ${FAILED[*]}"
     echo ""
-    echo "  排查:journalctl -u <服务名> -f ;单独重跑:bash ${SCRIPT_DIR}/install-<key>.sh"
-    [[ -n "${STACK_LOG}" ]] && echo "  完整日志:${STACK_LOG}"
+    echo "  to investigate: journalctl -u <service> -f"
+    echo "  to retry one:   bash ${SCRIPT_DIR}/install-<key>.sh"
+    [[ -n "${STACK_LOG}" ]] && echo "  full log:       ${STACK_LOG}"
     exit 1
 fi
 
 echo ""
-log_info "全部完成。后续:"
-echo "  - AI:    ollama pull qwen2.5:7b  &&  sudo bash ${SCRIPT_DIR}/start-ai.sh"
-echo "  - 检索:  确认 qdrant 在跑(127.0.0.1:6333),再 systemctl start nimoos-parser nimoos-search"
-echo "  - Photos AI/ML 后端为单独部署步骤(本编排器未含)。"
+log_info "All done. Next steps:"
+echo "  - AI:        ollama pull qwen2.5:7b  &&  sudo bash ${SCRIPT_DIR}/start-ai.sh"
+echo "  - retrieval: confirm qdrant is running on 127.0.0.1:6333, then"
+echo "               systemctl start nimoos-parser nimoos-search"
+echo "  - the Photos AI/ML backend is a separate step, not covered here."

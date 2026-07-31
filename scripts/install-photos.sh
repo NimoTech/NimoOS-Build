@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # install-photos.sh — First-time installer for nimoos-photos.service
 #
-# 一次性把 Go 写的 Photos 服务装好(主二进制):
-#   - 有源码用源码 go build(CGO=1, sqlite-vec);无源码从 OSS 拉预编译包
-#   - 装到 /usr/bin/nimoos-photos
-#   - 安装 systemd unit
-#   - 从 photos.conf.sample 初始化 /etc/nimoos/photos.conf(如不存在)
-#   - 创建 /var/lib/nimoos/photos、/var/log/nimoos
+# Sets up the main Go Photos binary in one pass:
+#   - builds from source with go build (CGO=1, sqlite-vec) when a source tree is
+#     present, otherwise downloads the prebuilt release package
+#   - installs it to /usr/bin/nimoos-photos
+#   - installs the systemd unit
+#   - initialises /etc/nimoos/photos.conf from photos.conf.sample if absent
+#   - creates /var/lib/nimoos/photos and /var/log/nimoos
 #
-# 用法:sudo bash install-photos.sh [--start]
+# Usage: sudo bash install-photos.sh [--start]
 #
-# 默认只 enable 不 start;加 --start 立刻拉起服务。
-# 注意:Photos 的 AI/ML 离线后端(人脸/CLIP 模型)是【单独】的部署步骤,
-#       本脚本只装主服务二进制;无 ML 后端时人物/语义检索功能不可用。
+# By default the service is enabled but not started; pass --start to bring it up
+# immediately.
+#
+# Note: the offline AI/ML backend for Photos (the face and CLIP models) is a
+# separate deployment step. This script installs only the main service binary,
+# and without the ML backend the people and semantic search features do not work.
 
 set -e
 
@@ -22,13 +26,13 @@ START_AFTER_INSTALL=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --start) START_AFTER_INSTALL=1; shift ;;
-        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
 
 ###############################################################################
-# Paths / release 坐标
+# Paths and release coordinates
 ###############################################################################
 
 readonly APP_NAME="nimoos-photos"
@@ -45,7 +49,7 @@ readonly ARCH_MODE="arch"
 readonly VERSION="${STACK_VERSION_PHOTOS:-${STACK_VERSION}}"
 readonly PHOTOS_SRC_DEFAULT="$(cd "${SCRIPT_DIR}/../../NimoOS-Photos" 2>/dev/null && pwd || true)"
 
-# 由 acquire() 填充
+# Filled in by acquire()
 RESOLVED=""; MODE=""; SYSROOT=""; CONF_SAMPLE_SRC=""; UNIT_SRC=""; BIN_SRC=""
 
 readonly CONF_PATH="/etc/nimoos"
@@ -70,41 +74,41 @@ log_fail()  { echo -e "\e[31m[FAILED]\e[0m $*"; exit 1; }
 ###############################################################################
 
 acquire() {
-    log_info "获取产物(优先本地源码,否则从 OSS 拉 ${VERSION})..."
+    log_info "acquiring the payload (local source first, otherwise download ${VERSION}) ..."
     set +e
     RESOLVED="$(stack_resolve "${PHOTOS_SRC_DEFAULT}" "${PROJECT}" "${VERSION}" "${ARCH_MODE}" "${TOKEN}")"
     local rc=$?
     set -e
     case "${rc}" in
         0)  MODE="source" ;;
-        10) MODE="oss" ;;
-        *)  log_fail "产物获取失败:本地无源码且 OSS 下载失败" ;;
+        10) MODE="download" ;;
+        *)  log_fail "could not obtain the payload: no local source tree and the download failed" ;;
     esac
     SYSROOT="${RESOLVED}/build/sysroot"
     CONF_SAMPLE_SRC="${SYSROOT}/etc/nimoos/${APP_NAME_SHORT}.conf.sample"
     UNIT_SRC="${SYSROOT}/usr/lib/systemd/system/${SERVICE_FILE}"
-    [[ -f "${CONF_SAMPLE_SRC}" ]] || log_fail "缺 conf 样例:${CONF_SAMPLE_SRC}"
-    [[ -f "${UNIT_SRC}" ]] || log_fail "缺 systemd unit:${UNIT_SRC}"
-    log_ok "模式=${MODE}  产物目录=${RESOLVED}"
+    [[ -f "${CONF_SAMPLE_SRC}" ]] || log_fail "sample configuration missing: ${CONF_SAMPLE_SRC}"
+    [[ -f "${UNIT_SRC}" ]] || log_fail "systemd unit missing: ${UNIT_SRC}"
+    log_ok "mode=${MODE}  payload=${RESOLVED}"
 }
 
 build_or_locate_binary() {
-    if [[ "${MODE}" == "oss" ]]; then
+    if [[ "${MODE}" == "download" ]]; then
         BIN_SRC="${SYSROOT}/usr/bin/${APP_NAME}"
-        [[ -f "${BIN_SRC}" ]] || log_fail "OSS 包缺预编译二进制:${BIN_SRC}"
-        log_ok "使用 OSS 预编译二进制"
+        [[ -f "${BIN_SRC}" ]] || log_fail "the downloaded package has no prebuilt binary: ${BIN_SRC}"
+        log_ok "using the prebuilt binary from the release package"
         return
     fi
-    log_info "源码模式:构建 ${APP_NAME}(CGO=1, sqlite-vec)..."
-    # sqlite-vec 绑定需系统 sqlite3.h
+    log_info "source mode: building ${APP_NAME} (CGO=1, sqlite-vec) ..."
+    # The sqlite-vec bindings need the system sqlite3.h
     if ! ls /usr/include/sqlite3.h >/dev/null 2>&1; then
-        log_warn "缺 sqlite3.h,尝试安装 libsqlite3-dev ..."
+        log_warn "sqlite3.h is missing, trying to install libsqlite3-dev ..."
         [ -x "$(command -v apt-get)" ] && ${sudo_cmd} apt-get install -y libsqlite3-dev || \
-            log_fail "请先安装 libsqlite3-dev(sqlite-vec 编译需要)"
+            log_fail "install libsqlite3-dev first; sqlite-vec cannot compile without it"
     fi
     local go_bin="/usr/local/go/bin/go"
     [[ -x "${go_bin}" ]] || go_bin="$(command -v go || true)"
-    [[ -n "${go_bin}" ]] || log_fail "找不到 go 工具链(/usr/local/go/bin/go 或 \$PATH)"
+    [[ -n "${go_bin}" ]] || log_fail "no go toolchain found (looked in /usr/local/go/bin/go and \$PATH)"
     pushd "${RESOLVED}" >/dev/null
     CGO_ENABLED=1 "${go_bin}" build -o "./${APP_NAME}" .
     popd >/dev/null
@@ -113,24 +117,26 @@ build_or_locate_binary() {
 }
 
 install_dirs() {
-    log_info "创建目录 ${CONF_PATH} / ${DATA_DIR} / ${LOG_DIR} / ${RUN_DIR} ..."
+    log_info "creating ${CONF_PATH} / ${DATA_DIR} / ${LOG_DIR} / ${RUN_DIR} ..."
     ${sudo_cmd} mkdir -p "${CONF_PATH}" "${DATA_DIR}" "${LOG_DIR}" "${RUN_DIR}"
 }
 
 install_conf() {
     ${sudo_cmd} cp -v "${CONF_SAMPLE_SRC}" "${CONF_PATH}/${APP_NAME_SHORT}.conf.sample"
     if [[ -f "${CONF_FILE}" ]]; then
-        log_info "保留已有配置:${CONF_FILE}"
+        log_info "keeping the existing configuration: ${CONF_FILE}"
     else
-        log_info "用样例初始化 ${CONF_FILE}"
+        log_info "initialising ${CONF_FILE} from the sample"
         ${sudo_cmd} cp -v "${CONF_SAMPLE_SRC}" "${CONF_FILE}"
     fi
 }
 
 install_binary() {
-    log_info "安装二进制 → ${BIN_DST} ..."
-    # 用临时文件 + mv(rename)替换: 直接 cp 覆盖【正在运行】的二进制会 "Text file busy"(ETXTBSY);
-    # rename 只换目录项、不动正在执行的旧 inode, 新二进制就位后由 maybe_start 重启加载。
+    log_info "installing the binary to ${BIN_DST} ..."
+    # Write to a temporary name and rename over the target. Copying straight onto
+    # a binary that is currently executing fails with "Text file busy" (ETXTBSY);
+    # rename only swaps the directory entry and leaves the running inode alone,
+    # and maybe_start then restarts the service to pick up the new one.
     local _tmp="${BIN_DST}.new.$$"
     ${sudo_cmd} cp -f "${BIN_SRC}" "${_tmp}"
     ${sudo_cmd} chmod 0755 "${_tmp}"
@@ -138,35 +144,39 @@ install_binary() {
 }
 
 install_unit() {
-    log_info "安装 systemd unit → ${UNIT_DST} ..."
+    log_info "installing the systemd unit to ${UNIT_DST} ..."
     ${sudo_cmd} cp -v "${UNIT_SRC}" "${UNIT_DST}"
     ${sudo_cmd} systemctl daemon-reload
-    log_info "Enable ${SERVICE_FILE} ..."
+    log_info "enabling ${SERVICE_FILE} ..."
     ${sudo_cmd} systemctl enable --force --no-ask-password "${SERVICE_FILE}"
-    # 防"改了没装上"型部署漂移(2026-07-28 OOM 复盘):装完必须验证
-    # cgroup 内存兜底真实生效,unit 没写 MemoryMax 时 systemd 返回 infinity。
+    # Guards against the "changed but never installed" kind of deployment drift
+    # (from the 2026-07-28 OOM post-mortem): after installing, verify that the
+    # cgroup memory ceiling really took effect. systemd reports infinity when the
+    # unit does not set MemoryMax.
     local mem_max
     mem_max=$(${sudo_cmd} systemctl show "${SERVICE_FILE}" -p MemoryMax --value)
     if [[ -z "${mem_max}" || "${mem_max}" == "infinity" ]]; then
-        log_fail "unit 内存兜底未生效(MemoryMax=${mem_max:-empty}),检查 ${UNIT_DST}"
+        log_fail "the unit's memory ceiling is not in effect (MemoryMax=${mem_max:-empty}); check ${UNIT_DST}"
     fi
-    log_ok "内存兜底已生效:MemoryMax=${mem_max}"
+    log_ok "memory ceiling in effect: MemoryMax=${mem_max}"
 }
 
 maybe_start() {
     if ${sudo_cmd} systemctl is-active --quiet "${SERVICE_FILE}"; then
-        # 已在运行(升级场景): 必须 restart 以加载新二进制(start 对已运行服务是 no-op → 会继续跑旧代码)
-        log_info "重启 ${SERVICE_FILE} 以加载新版本 ..."
+        # Already running (the upgrade case): it must be restarted to pick up the
+        # new binary. `start` is a no-op on a running service, which would leave
+        # the old code in place.
+        log_info "restarting ${SERVICE_FILE} to load the new version ..."
         ${sudo_cmd} systemctl restart "${SERVICE_FILE}"
         sleep 1
         ${sudo_cmd} systemctl status "${SERVICE_FILE}" --no-pager -l --lines=10 || true
     elif [[ "${START_AFTER_INSTALL}" == "1" ]]; then
-        log_info "启动 ${SERVICE_FILE} ..."
+        log_info "starting ${SERVICE_FILE} ..."
         ${sudo_cmd} systemctl start "${SERVICE_FILE}"
         sleep 1
         ${sudo_cmd} systemctl status "${SERVICE_FILE}" --no-pager -l --lines=10 || true
     else
-        log_info "服务已 enable 未 start。要立刻拉起:"
+        log_info "the service is enabled but not started. To bring it up now:"
         echo "    ${sudo_cmd:-sudo} systemctl start ${SERVICE_FILE}"
     fi
 }
@@ -186,10 +196,11 @@ install_unit
 maybe_start
 
 echo ""
-log_ok "Photos 安装完成(主二进制)。"
+log_ok "Photos installed (main binary)."
 echo ""
-echo "  配置:   ${CONF_FILE}"
-echo "  数据:   ${DATA_DIR}"
-echo "  日志:   journalctl -u ${SERVICE_FILE} -f"
-echo "  更新:   bash $(dirname "$0")/deploy.sh ... (或重跑本脚本)"
-echo "  注意:   AI/ML 后端(人脸/CLIP)为单独部署步骤,未随本脚本安装。"
+echo "  config: ${CONF_FILE}"
+echo "  data:   ${DATA_DIR}"
+echo "  logs:   journalctl -u ${SERVICE_FILE} -f"
+echo "  update: bash $(dirname "$0")/deploy.sh ...  (or re-run this script)"
+echo "  note:   the AI/ML backend (face and CLIP models) is a separate step and"
+echo "          was not installed here."

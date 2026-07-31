@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 #
-#           NimoOS Installer Script v0.4.16#
+#           NimoOS Installer Script v0.4.17#
 #   GitHub: https://github.com/NimoTech/NimoOS
 #   Issues: https://github.com/NimoTech/NimoOS/issues
 #   Requires: bash, mv, rm, tr, grep, sed, curl/wget, tar, smartmontools, parted, ntfs-3g, net-tools
@@ -8,9 +8,9 @@
 #   This script installs NimoOS to your system.
 #   Usage:
 #
-#   	$ wget -qO- https://nimoos.oss-cn-shenzhen.aliyuncs.com/get/nimoos-install.sh | sudo bash
+#   	$ wget -qO- https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 #   	  or
-#   	$ curl -fsSL https://nimoos.oss-cn-shenzhen.aliyuncs.com/get/nimoos-install.sh | sudo bash
+#   	$ curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 #
 #   In automated environments, you may want to run as root.
 #   If using curl, we recommend using the -fsSL flags.
@@ -75,7 +75,7 @@ UNAME_U="$(uname -s)"
 readonly UNAME_U
 
 readonly NIMO_CONF_PATH=/etc/nimoos/gateway.ini
-readonly NIMO_UNINSTALL_URL="https://nimoos.oss-cn-shenzhen.aliyuncs.com/uninstall/v0.4.17"
+readonly NIMO_UNINSTALL_URL="https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-uninstall-v0.4.17.sh"
 readonly NIMO_UNINSTALL_PATH=/usr/bin/nimoos-uninstall
 
 # REQUIREMENTS CONF PATH
@@ -101,7 +101,7 @@ readonly GREEN_SEPARATOR="${aCOLOUR[0]}:$COLOUR_RESET"
 TARGET_ARCH=""
 TMP_ROOT=/tmp/nimoos-installer
 REGION="UNKNOWN"
-NIMO_DOWNLOAD_DOMAIN="https://nimoos.oss-cn-shenzhen.aliyuncs.com/"
+NIMO_DOWNLOAD_DOMAIN="https://nimoos-public.s3.us-east-2.amazonaws.com/"
 
 trap 'onCtrlC' INT
 onCtrlC() {
@@ -183,16 +183,20 @@ exist_file() {
 
 
 
-# 0 Get download url domain
-# To solve the problem that Chinese users cannot access github.
+# 0 Download domain and region
+#
+# The download domain is the same worldwide — one bucket behind one CDN — so
+# unlike upstream CasaOS there is no per-region artifact host to choose.
+#
+# REGION is still detected, but only to pick Docker's own package mirror during
+# Install_Docker; it does not affect where NimoOS artifacts come from.
 Get_Download_Url_Domain() {
-    # Use ipconfig.io/country and https://ifconfig.io/country_code to get the country code
+    # ipconfig.io/country and ifconfig.io/country_code report the country code
     REGION=$(${sudo_cmd} curl --connect-timeout 2 -s ipconfig.io/country || echo "")
     if [ "${REGION}" = "" ]; then
        REGION=$(${sudo_cmd} curl --connect-timeout 2 -s https://ifconfig.io/country_code || echo "")
     fi
-    # Force use aliyun oss
-    NIMO_DOWNLOAD_DOMAIN="https://nimoos.oss-cn-shenzhen.aliyuncs.com/"
+    NIMO_DOWNLOAD_DOMAIN="https://nimoos-public.s3.us-east-2.amazonaws.com/"
 }
 
 # 1 Check Arch
@@ -214,20 +218,20 @@ Check_Arch() {
     esac
     Show 0 "Your hardware architecture is : $UNAME_M"
     NIMO_PACKAGES=(
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Gateway/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-gateway-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-MessageBus/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-message-bus-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-UserService/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-user-service-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-LocalStorage/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-local-storage-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-AppManagement/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-app-management-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-CLI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-cli-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-UI/releases/download/v1.9.4-alpha1/linux-all-nimoos-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-AppStore/releases/download/v1.0.9/linux-all-appstore-v1.0.9.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-AI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-ai-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Wiki/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-wiki-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Search/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-search-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Photos/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-photos-v1.9.4-alpha1.tar.gz"
-        "${NIMO_DOWNLOAD_DOMAIN}NimoTech/NimoOS-Terminal/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-terminal-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Gateway/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-gateway-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-MessageBus/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-message-bus-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-UserService/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-user-service-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-LocalStorage/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-local-storage-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-AppManagement/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-app-management-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-CLI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-cli-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-UI/releases/download/v1.9.4-alpha1/linux-all-nimoos-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-AppStore/releases/download/v1.0.9/linux-all-appstore-v1.0.9.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-AI/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-ai-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Wiki/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-wiki-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Search/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-search-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Photos/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-photos-v1.9.4-alpha1.tar.gz"
+        "${NIMO_DOWNLOAD_DOMAIN}nimoos/NimoOS-Terminal/releases/download/v1.9.4-alpha1/linux-${TARGET_ARCH}-nimoos-terminal-v1.9.4-alpha1.tar.gz"
     )
 }
 
@@ -473,8 +477,11 @@ Install_Docker() {
         ${sudo_cmd} mkdir -p "${PREFIX}/etc/apt/sources.list.d"
     fi
     GreyStart
+    # Always fetch the installer from Docker's own domain. The official script
+    # takes --mirror itself, so a China mirror needs no third-party host; this
+    # used to curl a domain nobody here controls straight into root's shell.
     if [[ "${REGION}" = "China" ]] || [[ "${REGION}" = "CN" ]]; then
-        ${sudo_cmd} curl -fsSL https://play.cuse.eu.org/get_docker.sh | bash -s docker --mirror Aliyun
+        ${sudo_cmd} curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
     else
         ${sudo_cmd} curl -fsSL https://get.docker.com | bash
     fi
@@ -521,11 +528,13 @@ EOF
 #Install Rclone
 Install_rclone_from_source() {
   ${sudo_cmd} wget -qO ./install.sh https://rclone.org/install.sh
-  if [[ "${REGION}" = "China" ]] || [[ "${REGION}" = "CN" ]]; then
-    sed -i 's/downloads.rclone.org/nimoos.oss-cn-shenzhen.aliyuncs.com/g' ./install.sh
-  else
-    sed -i 's/downloads.rclone.org/get.casaos.io/g' ./install.sh
-  fi
+  # Fetch rclone from its own official mirror.
+  #
+  # This used to rewrite downloads.rclone.org to a mirror: our bucket for CN,
+  # and get.casaos.io otherwise. Both were wrong. The bucket has no rclone/
+  # prefix, so the CN path 404'd; and get.casaos.io is CasaOS's own
+  # infrastructure, which we should not be sending our users' downloads to.
+  # rclone's official downloads are globally available, so no mirror is needed.
   ${sudo_cmd} chmod +x ./install.sh
   ${sudo_cmd} ./install.sh || {
     Show 1 "Installation failed, please try again."
@@ -571,9 +580,10 @@ Install_Ollama() {
   Show 0 "Ollama installed."
 }
 
-# 终端组件(nimoos-terminal)依赖:tmux + ttyd。
-# tmux 走 apt(真彩色需 >= 3.2,Debian 11+/trixie 均满足);ttyd 按架构拉取
-# (缺失则拉:OSS 优先、GitHub 兜底),放 /usr/lib/nimoos/ttyd。幂等:已装则跳过。
+# The terminal component depends on tmux and ttyd.
+# tmux comes from apt (true colour needs >= 3.2, satisfied by Debian 11+);
+# ttyd is fetched per architecture (mirror first, GitHub as a fallback) into
+# /usr/lib/nimoos/ttyd. Idempotent: skipped when already present.
 Install_Terminal_Deps() {
     if ! command -v tmux >/dev/null 2>&1; then
         Show 2 "Installing tmux (terminal dependency)..."
@@ -602,8 +612,9 @@ Install_Terminal_Deps() {
     fi
 }
 
-# nimoos-agent 现以离线 Docker 容器部署(见 install-ai.sh / nimoos-stack-install.sh),
-# 由下方 Install_Stack 步骤经栈安装拉起,不再在核心安装阶段建 host venv。
+# nimoos-agent now ships as an offline Docker container (see install-ai.sh and
+# nimoos-stack-install.sh) brought up by Install_Stack below, so the core
+# install no longer builds a host venv.
 
 #Configuration Addons
 Configuration_Addons() {
@@ -718,8 +729,9 @@ DownloadAndInstallNimoOS() {
     GreyStart
     find "${SYSROOT_DIR}" -type f | ${sudo_cmd} cut -c ${#SYSROOT_DIR}- | ${sudo_cmd} cut -c 2- | ${sudo_cmd} tee "${MANIFEST_FILE}" >/dev/null || Show 1 "Failed to create manifest file"
 
-    # 用 tar 铺到 / 而非 cp -rf:usrmerge 系统上 /lib /bin /sbin 是指向 /usr/* 的符号链接,
-    # cp -rf 会因"用目录覆盖符号链接"失败;tar --keep-directory-symlink 会顺着符号链接合并进 /usr。
+    # Use tar rather than cp -rf: on usrmerge systems /lib, /bin and /sbin are
+    # symlinks into /usr/*, so cp -rf fails replacing a symlink with a
+    # directory; tar --keep-directory-symlink follows them and merges into /usr.
     ${sudo_cmd} tar -cf - -C "${SYSROOT_DIR}" . | ${sudo_cmd} tar -C / --keep-directory-symlink -xf - \
         || Show 1 "Failed to install NimoOS"
     ${sudo_cmd} systemctl daemon-reload || Show 3 "systemd daemon-reload failed (non-fatal)."
@@ -746,10 +758,13 @@ DownloadAndInstallNimoOS() {
         ${sudo_cmd} chmod +x $UI_EVENTS_REG_SCRIPT
     fi
     
-    # Modify app store configuration
-    if [[ -f "$PREFIX/etc/nimoos/app-management.conf" ]]; then
-        sed -i "s#https://github.com/IceWhaleTech/_appstore/#${NIMO_DOWNLOAD_DOMAIN}NimoTech/_appstore/#g" "$PREFIX/etc/nimoos/app-management.conf"
-    fi
+    # No app store URL rewriting here. This used to sed
+    # https://github.com/IceWhaleTech/_appstore/ into a NimoTech/_appstore/ prefix
+    # on the download domain, but that pattern appears in no conf template we ship
+    # (the sample lists jsDelivr and big-bear URLs instead), and that prefix does
+    # not exist in the bucket. The rewrite was inherited dead code, and leaving it
+    # in place would have pointed the store at a 404 the moment it did match.
+    # The shipped store URLs live in app-management.conf.sample.
 
     #Download Uninstall Script
     if [[ -f $PREFIX/tmp/nimoos-uninstall ]]; then
@@ -766,12 +781,12 @@ DownloadAndInstallNimoOS() {
     Install_Rclone
     Install_Ollama
     Install_Terminal_Deps
-    # nimoos-agent 由 Install_Stack(install-ai.sh)以 Docker 容器部署,核心阶段不再建 venv
+    # Install_Stack deploys nimoos-agent as a container; no venv here
 
     for SERVICE in "${NIMO_SERVICES[@]}"; do
         Show 2 "Starting ${SERVICE}..."
         GreyStart
-        ${sudo_cmd} systemctl enable "${SERVICE}" 2>/dev/null || true   # 开机自启(新服务默认未 enable)
+        ${sudo_cmd} systemctl enable "${SERVICE}" 2>/dev/null || true   # enable at boot; new services are not enabled by default
         ${sudo_cmd} systemctl start "${SERVICE}" || Show 3 "Service ${SERVICE} does not exist."
         ColorReset
     done
@@ -830,8 +845,9 @@ Welcome_Banner() {
 }
 
 # Install retrieval / AI stack (qdrant/parser/search/wiki/photos/ai) in one go
-# 用自包含的 nimoos-stack-install.sh(从 OSS 拉取),避免用户再跑第二个脚本。
-# 设 NIMO_SKIP_STACK=1 可跳过(栈较重:Python venv + 模型 + Ollama)。
+# Use the self-contained nimoos-stack-install.sh so the user does not have to
+# run a second script. Set NIMO_SKIP_STACK=1 to skip it; the stack is heavy
+# (Python venv, models, Ollama).
 Install_Stack() {
     if [[ "${NIMO_SKIP_STACK:-0}" == "1" ]]; then
         Show 3 "Skipping retrieval/AI stack (NIMO_SKIP_STACK=1)."
@@ -846,7 +862,7 @@ Install_Stack() {
         Show 3 "Failed to download stack installer (${stack_url}), skipping stack."
         return
     fi
-    # 非致命:栈安装失败不影响已装好的核心
+    # Non-fatal: a stack failure does not affect the installed core
     ${sudo_cmd} bash "${stack_sh}" --start --continue \
         || Show 3 "Stack install reported errors (non-fatal); core NimoOS is installed."
 }

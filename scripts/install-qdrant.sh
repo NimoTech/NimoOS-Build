@@ -1,28 +1,34 @@
 #!/usr/bin/env bash
-# install-qdrant.sh — 把 qdrant 从 docker 容器迁成原生 systemd 服务
+# install-qdrant.sh — move qdrant from a docker container to a native systemd service
 #
-# 为什么:
-#   - Parser 的 unit 写了 After=qdrant.service / Wants=qdrant.service,
-#     但目前 qdrant 是 `docker run`,没有 systemd unit,这层依赖等于空话,
-#     重启后 parser 有可能比 qdrant 早起来导致连不上。
-#   - NAS UI 的 AppManagement 会把这个独立容器当用户应用列出来,看着碍眼。
+# Why:
+#   - The Parser unit declares After=qdrant.service / Wants=qdrant.service, but
+#     while qdrant runs as a bare `docker run` there is no such unit, so that
+#     dependency is a no-op and parser can come up before qdrant after a reboot
+#     and fail to connect.
+#   - AppManagement lists the standalone container as if it were a user app,
+#     which clutters the NAS UI.
 #
-# 做什么:
-#   - 从 github 下载 qdrant 二进制 (默认 v1.18.1,跟当前 docker image 同版本)
-#   - 装到 /usr/local/bin/qdrant
-#   - 写 /etc/qdrant/config.yaml(只监听 127.0.0.1,数据沿用 /opt/qdrant/storage)
-#   - 装 /usr/lib/systemd/system/qdrant.service
-#   - 停掉旧 docker 容器(不删,验证完再手动 docker rm)
-#   - 启动并校验 6333 / 6334
+# What it does:
+#   - Downloads the qdrant binary (default v1.18.1, the same version as the
+#     docker image currently in use)
+#   - Installs it to /usr/local/bin/qdrant
+#   - Writes /etc/qdrant/config.yaml (listens on 127.0.0.1 only, keeps using
+#     the existing /opt/qdrant/storage data directory)
+#   - Installs /usr/lib/systemd/system/qdrant.service
+#   - Stops the old docker container without deleting it, so the migration can
+#     be verified before `docker rm`
+#   - Starts the service and checks ports 6333 / 6334
 #
-# 用法:
+# Usage:
 #   sudo bash install-qdrant.sh [--version v1.18.1] [--tarball <path>] [--remove-docker]
 #
-#   --version        换其他版本
-#   --tarball PATH   用本地已下好的 qdrant-*.tar.gz,不走网络下载
-#   --remove-docker  原生 qdrant 起来并验证后,自动 docker rm 旧容器
+#   --version        install a different version
+#   --tarball PATH   use a locally downloaded qdrant-*.tar.gz instead of fetching
+#   --remove-docker  `docker rm` the old container once native qdrant is verified
 #
-# 数据兼容性:同版本同 storage_path = 原地启动即可,不需要 dump/restore。
+# Data compatibility: same version plus same storage_path means the native
+# service starts on the existing data as-is; no dump/restore needed.
 
 set -e
 
@@ -36,7 +42,7 @@ while [[ $# -gt 0 ]]; do
         --version) QDRANT_VERSION="$2"; shift 2 ;;
         --tarball) LOCAL_TARBALL="$2"; shift 2 ;;
         --remove-docker) REMOVE_DOCKER=1; shift ;;
-        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -46,12 +52,13 @@ done
 ###############################################################################
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# 复用 stack-fetch.sh 的 OSS deps 基址(standalone 运行时 lib 可能缺,用内置默认兜底)
+# Reuse the dependency mirror base from stack-fetch.sh. Run standalone the lib
+# may be missing, so fall back to the built-in default.
 if [[ -f "${SCRIPT_DIR}/lib/stack-fetch.sh" ]]; then
     # shellcheck source=lib/stack-fetch.sh
     source "${SCRIPT_DIR}/lib/stack-fetch.sh"
 fi
-: "${NIMO_DEPS_BASE:=https://nimoos.oss-cn-shenzhen.aliyuncs.com/deps}"
+: "${NIMO_DEPS_BASE:=https://nimoos-public.s3.us-east-2.amazonaws.com/deps}"
 
 readonly SERVICE_FILE="qdrant.service"
 readonly UNIT_DST="/usr/lib/systemd/system/${SERVICE_FILE}"
@@ -80,31 +87,32 @@ detect_arch() {
     case "$m" in
         x86_64)  TARBALL_ARCH="x86_64-unknown-linux-gnu" ;;
         aarch64) TARBALL_ARCH="aarch64-unknown-linux-gnu" ;;
-        *) log_fail "不支持的架构: $m" ;;
+        *) log_fail "unsupported architecture: $m" ;;
     esac
-    log_ok "架构:$m → $TARBALL_ARCH"
+    log_ok "architecture: $m -> $TARBALL_ARCH"
 }
 
 check_glibc() {
-    # qdrant v1.10+ 的 -gnu 二进制需要 GLIBC 2.38+(Debian 12 只到 2.36)。
-    # 撞墙就别浪费时间装了,直接退出建议留 docker。
+    # The -gnu builds of qdrant v1.10+ need GLIBC 2.38 or newer, and Debian 12
+    # ships 2.36. Bail out early rather than install something that cannot run;
+    # staying on docker is the right answer on those systems.
     local need="2.38"
     local have
     have="$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
     if [[ -z "$have" ]]; then
-        log_warn "无法探测 GLIBC 版本,继续(可能失败)"
+        log_warn "cannot determine the GLIBC version, continuing anyway (may fail)"
         return
     fi
-    # 比较 a >= b
+    # true when have >= need
     if [[ "$(printf '%s\n%s' "$need" "$have" | sort -V | head -1)" != "$need" ]]; then
-        log_fail "宿主 GLIBC $have < $need。qdrant 二进制不兼容,继续留 docker,本脚本不适合你的发行版。"
+        log_fail "host GLIBC $have < $need. The qdrant binary is incompatible; stay on docker, this script does not suit your distribution."
     fi
-    log_ok "GLIBC $have ≥ $need"
+    log_ok "GLIBC $have >= $need"
 }
 
 stop_docker_qdrant() {
     if ! command -v docker >/dev/null 2>&1; then
-        log_info "未装 docker,跳过容器停止"
+        log_info "docker is not installed, nothing to stop"
         return
     fi
     local cid
@@ -113,20 +121,20 @@ stop_docker_qdrant() {
         cid="$(${sudo_cmd} docker ps -q --filter "name=^/qdrant$" 2>/dev/null | head -1)"
     fi
     if [[ -n "$cid" ]]; then
-        log_info "停止 docker qdrant 容器 $cid ..."
+        log_info "stopping the docker qdrant container $cid ..."
         ${sudo_cmd} docker stop "$cid" >/dev/null
-        log_ok "docker qdrant 已停(容器保留,可后续 docker rm 或加 --remove-docker)"
+        log_ok "docker qdrant stopped (container kept; remove it later or pass --remove-docker)"
     else
-        log_info "未发现运行中的 docker qdrant 容器"
+        log_info "no running docker qdrant container found"
     fi
 }
 
 verify_storage() {
     if [[ ! -d "$STORAGE_DIR" ]]; then
-        log_warn "数据目录 $STORAGE_DIR 不存在,首次启动 qdrant 会创建空库(若之前 docker 用的别处,迁移会丢数据,请确认)"
+        log_warn "data directory $STORAGE_DIR does not exist; qdrant will create an empty database on first start. If the docker container used a different path, migrating this way loses the data — check before continuing."
         ${sudo_cmd} mkdir -p "$STORAGE_DIR"
     else
-        log_ok "保留现有数据目录:$STORAGE_DIR"
+        log_ok "keeping the existing data directory: $STORAGE_DIR"
     fi
     ${sudo_cmd} mkdir -p "$SNAPSHOT_DIR" "$CONF_DIR"
 }
@@ -135,7 +143,7 @@ download_binary() {
     if [[ -x "$BIN_DST" ]]; then
         local cur
         cur="$($BIN_DST --version 2>/dev/null | head -1 || echo '')"
-        log_info "已有 $BIN_DST ($cur),覆盖安装 $QDRANT_VERSION ..."
+        log_info "$BIN_DST already present ($cur), overwriting with $QDRANT_VERSION ..."
     fi
 
     local tmpdir
@@ -144,44 +152,46 @@ download_binary() {
 
     local src
     if [[ -n "$LOCAL_TARBALL" ]]; then
-        [[ -f "$LOCAL_TARBALL" ]] || log_fail "本地 tarball 不存在: $LOCAL_TARBALL"
-        log_info "用本地 tarball:$LOCAL_TARBALL"
+        [[ -f "$LOCAL_TARBALL" ]] || log_fail "local tarball not found: $LOCAL_TARBALL"
+        log_info "using the local tarball: $LOCAL_TARBALL"
         src="$LOCAL_TARBALL"
     else
-        # OSS deps 优先(国内/无 github 直连的机器),失败再回退 github 官方 release。
+        # Prefer the NimoOS dependency mirror — it is reachable on machines with
+        # no direct GitHub access — and fall back to the official release.
         local depfile="qdrant-${TARBALL_ARCH}.tar.gz"
-        local oss_url="${NIMO_DEPS_BASE}/qdrant/${depfile}"
+        local mirror_url="${NIMO_DEPS_BASE}/qdrant/${depfile}"
         local gh_url="https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/${depfile}"
-        log_info "下载 qdrant 二进制(OSS 优先)..."
-        if curl -fL --retry 3 --connect-timeout 10 -o "$tmpdir/qdrant.tar.gz" "$oss_url"; then
-            log_ok "从 OSS deps 下载成功:$oss_url"
+        log_info "downloading the qdrant binary (mirror first) ..."
+        if curl -fL --retry 3 --connect-timeout 10 -o "$tmpdir/qdrant.tar.gz" "$mirror_url"; then
+            log_ok "downloaded from the dependency mirror: $mirror_url"
         elif curl -fL --connect-timeout 10 -o "$tmpdir/qdrant.tar.gz" "$gh_url"; then
-            log_ok "OSS 不可用,已从 GitHub 下载:$gh_url"
+            log_ok "mirror unavailable, downloaded from GitHub: $gh_url"
         else
-            log_fail "下载失败(OSS deps 与 GitHub 均不可达),或先手动下好后用 --tarball <path>"
+            log_fail "download failed (neither the mirror nor GitHub is reachable); download it manually and pass --tarball <path>"
         fi
         src="$tmpdir/qdrant.tar.gz"
     fi
 
-    log_info "解压 ..."
+    log_info "extracting ..."
     tar -xzf "$src" -C "$tmpdir"
     local extracted
     extracted="$(find "$tmpdir" -maxdepth 2 -type f -name qdrant -executable | head -1)"
-    [[ -n "$extracted" ]] || log_fail "tar 里没找到 qdrant 二进制"
+    [[ -n "$extracted" ]] || log_fail "no qdrant binary inside the tarball"
 
     ${sudo_cmd} install -m 0755 "$extracted" "$BIN_DST"
-    log_ok "已装 $BIN_DST ($($BIN_DST --version 2>/dev/null | head -1))"
+    log_ok "installed $BIN_DST ($($BIN_DST --version 2>/dev/null | head -1))"
 }
 
 write_config() {
     if [[ -f "$CONF_FILE" ]]; then
-        log_info "保留已有配置:$CONF_FILE"
+        log_info "keeping the existing configuration: $CONF_FILE"
         return
     fi
-    log_info "写最小化配置 → $CONF_FILE"
+    log_info "writing a minimal configuration to $CONF_FILE"
     ${sudo_cmd} tee "$CONF_FILE" >/dev/null <<EOF
-# /etc/qdrant/config.yaml — 由 install-qdrant.sh 生成
-# 监听 127.0.0.1 与 docker 原行为一致;若需 LAN 访问改 host 并加防火墙规则。
+# /etc/qdrant/config.yaml — generated by install-qdrant.sh
+# Listening on 127.0.0.1 matches the previous docker behaviour. For LAN access,
+# change the host and add a firewall rule.
 log_level: INFO
 
 storage:
@@ -199,7 +209,7 @@ EOF
 }
 
 write_unit() {
-    log_info "写 systemd unit → $UNIT_DST"
+    log_info "writing the systemd unit to $UNIT_DST"
     ${sudo_cmd} tee "$UNIT_DST" >/dev/null <<EOF
 [Unit]
 Description=Qdrant vector database (native)
@@ -228,20 +238,20 @@ EOF
 }
 
 start_and_verify() {
-    log_info "启动 $SERVICE_FILE ..."
+    log_info "starting $SERVICE_FILE ..."
     ${sudo_cmd} systemctl start "$SERVICE_FILE"
 
-    log_info "等待端口 6333 监听 (最多 15s) ..."
+    log_info "waiting for port 6333 to listen (up to 15s) ..."
     local ok=0
     for _ in $(seq 1 15); do
         if ss -tln 2>/dev/null | grep -qE '127\.0\.0\.1:6333'; then ok=1; break; fi
         sleep 1
     done
     if [[ "$ok" -eq 1 ]]; then
-        log_ok "qdrant 起来了 (127.0.0.1:6333)"
+        log_ok "qdrant is up (127.0.0.1:6333)"
         curl -sf http://127.0.0.1:6333/collections 2>/dev/null | head -c 200; echo
     else
-        log_warn "15s 内未见 6333 监听,看 journalctl -u $SERVICE_FILE -n 50"
+        log_warn "port 6333 is not listening after 15s; check journalctl -u $SERVICE_FILE -n 50"
     fi
 
     ${sudo_cmd} systemctl status "$SERVICE_FILE" --no-pager -l --lines=8 || true
@@ -249,7 +259,7 @@ start_and_verify() {
 
 maybe_remove_docker() {
     if [[ "$REMOVE_DOCKER" -ne 1 ]]; then
-        log_info "如确认原生 qdrant 正常,手动清掉旧容器:"
+        log_info "once native qdrant looks healthy, remove the old container:"
         echo "    sudo docker rm qdrant"
         return
     fi
@@ -257,16 +267,17 @@ maybe_remove_docker() {
     local cid
     cid="$(${sudo_cmd} docker ps -aq --filter "name=^/qdrant$" 2>/dev/null | head -1)"
     if [[ -n "$cid" ]]; then
-        log_info "移除 docker qdrant 容器 $cid ..."
+        log_info "removing the docker qdrant container $cid ..."
         ${sudo_cmd} docker rm -f "$cid" >/dev/null
-        log_ok "docker 容器已删,NAS 应用列表会刷新"
+        log_ok "container removed; the NAS app list will refresh"
     fi
 }
 
 restart_dependents() {
-    # parser 在 docker qdrant 停的那一瞬间会丢连接,起来后建议拉一下重连
+    # parser loses its connection the moment the docker qdrant stops, so give it
+    # a restart to reconnect to the native service.
     if systemctl is-active --quiet nimoos-parser 2>/dev/null; then
-        log_info "重启 nimoos-parser 让它重连新 qdrant ..."
+        log_info "restarting nimoos-parser so it reconnects to the new qdrant ..."
         ${sudo_cmd} systemctl restart nimoos-parser.service || true
     fi
 }
@@ -275,9 +286,9 @@ restart_dependents() {
 # Main
 ###############################################################################
 
-log_info "=== Qdrant 原生安装 / docker 迁移 ==="
-log_info "版本:$QDRANT_VERSION"
-log_info "数据:$STORAGE_DIR (沿用 docker 原数据)"
+log_info "=== Qdrant native install / docker migration ==="
+log_info "version: $QDRANT_VERSION"
+log_info "data:    $STORAGE_DIR (reusing the docker data directory)"
 
 detect_arch
 check_glibc
@@ -291,11 +302,11 @@ restart_dependents
 maybe_remove_docker
 
 echo ""
-log_ok "迁移完成。"
+log_ok "Migration complete."
 echo ""
-echo "  二进制:  $BIN_DST"
-echo "  配置:    $CONF_FILE"
-echo "  数据:    $STORAGE_DIR"
-echo "  日志:    journalctl -u $SERVICE_FILE -f"
-echo "  集合:    curl http://127.0.0.1:6333/collections"
-echo "  回滚:    sudo systemctl disable --now qdrant && sudo docker start qdrant"
+echo "  binary:      $BIN_DST"
+echo "  config:      $CONF_FILE"
+echo "  data:        $STORAGE_DIR"
+echo "  logs:        journalctl -u $SERVICE_FILE -f"
+echo "  collections: curl http://127.0.0.1:6333/collections"
+echo "  rollback:    sudo systemctl disable --now qdrant && sudo docker start qdrant"

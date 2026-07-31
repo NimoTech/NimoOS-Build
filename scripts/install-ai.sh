@@ -2,14 +2,16 @@
 # install-ai.sh — Install Ollama and NimoOS Agent (container bundle)
 # Usage: sudo bash install-ai.sh [--ollama-only]
 #
-# Installs Ollama from an offline OSS bundle, then deploys the NimoOS Agent
-# as a Docker container (offline image tarball + compose).  No host Python
-# venv or apt python packages are required.
+# Installs Ollama from an offline bundle on the dependency mirror, then deploys
+# the NimoOS Agent as a Docker container (offline image tarball plus compose).
+# No host Python venv or apt python packages are required.
 #
-#   --ollama-only   只装 Ollama, 不动 Agent。供 build install.sh 补栈用:
-#                   agent 已由 install.sh 自己部署(本地离线镜像包, 且能识别
-#                   host venv 形态), 这里再跑 setup_agent 会重复下 300MB 包、
-#                   还会把 host 形态机器的 nimoos-agent.service 停掉。
+#   --ollama-only   Install Ollama only, leaving the Agent alone. This is what
+#                   the build's install.sh uses when filling in the stack: it has
+#                   already deployed the agent itself, from a local offline image
+#                   and in a way that recognises a host-venv layout. Running
+#                   setup_agent again would re-download the 300MB bundle and stop
+#                   nimoos-agent.service on host-layout machines.
 
 set -e
 
@@ -51,11 +53,13 @@ install_ollama() {
         return
     fi
 
-    # 从 OSS deps/ 下官方 bundle 解包安装,而不是 `curl ollama.com/install.sh | sh`
-    # —— 后者在无法直连 ollama.com 的机器(国内 NAS)上会卡死/超时。
-    # bundle 布局:bin/ollama + lib/ollama/...,解到 /usr/local 即得
-    # /usr/local/bin/ollama 与 /usr/local/lib/ollama(二进制按相对路径找运行库)。
-    log_info "Installing Ollama from OSS deps (offline-friendly, skips ollama.com)..."
+    # Unpack the official bundle from the deps/ mirror rather than running
+    # `curl ollama.com/install.sh | sh`, which hangs or times out on machines
+    # with no direct route to ollama.com.
+    # Bundle layout is bin/ollama plus lib/ollama/..., so unpacking into
+    # /usr/local yields /usr/local/bin/ollama and /usr/local/lib/ollama — the
+    # binary finds its runtime libraries by relative path.
+    log_info "Installing Ollama from the dependency mirror (offline-friendly, skips ollama.com)..."
 
     local arch
     case "$(uname -m)" in
@@ -66,7 +70,7 @@ install_ollama() {
     local tarfile="ollama-linux-${arch}.tar.zst"
     local url="${NIMO_DEPS_BASE}/ollama/${tarfile}"
 
-    # .tar.zst 需要 zstd 才能解
+    # .tar.zst needs zstd to unpack
     if ! command -v zstd >/dev/null 2>&1; then
         log_info "Installing zstd (needed to unpack the ollama bundle)..."
         if [ -x "$(command -v apt-get)" ]; then
@@ -82,29 +86,32 @@ install_ollama() {
         rm -f "${tmp}"
         log_fail "Ollama bundle download failed: ${url}"
     fi
-    # 安装前缀可配置:NAS 的 /usr/local 常在很小的 overlay 根分区上,而 ollama
-    # bundle 含 GPU 库解压后数 GB,塞进去会撑爆根分区。可设 NIMO_OLLAMA_PREFIX=/opt/ollama
-    # 把它放到大盘。二进制按相对路径 ../lib/ollama 找运行库,故 bin/ 与 lib/ 同前缀即可。
+    # The install prefix is configurable. On a NAS /usr/local often sits on a
+    # small overlay root partition, while the ollama bundle unpacks to several GB
+    # once the GPU libraries are included — enough to fill that partition. Set
+    # NIMO_OLLAMA_PREFIX=/opt/ollama to put it on a larger disk. The binary
+    # resolves its runtime libraries via the relative path ../lib/ollama, so bin/
+    # and lib/ only need to share a prefix.
     local prefix="${NIMO_OLLAMA_PREFIX:-/usr/local}"
     log_info "Unpacking → ${prefix} ..."
     ${sudo_cmd} mkdir -p "${prefix}"
     ${sudo_cmd} tar --zstd -xf "${tmp}" -C "${prefix}"
     rm -f "${tmp}"
     local ollama_bin="${prefix}/bin/ollama"
-    [ -x "${ollama_bin}" ] || log_fail "未在 ${ollama_bin} 找到二进制(bundle 布局异常)"
-    # 非默认前缀时,在 /usr/local/bin 放个软链,保证 `ollama` 命令在 PATH 上
+    [ -x "${ollama_bin}" ] || log_fail "no binary at ${ollama_bin} (unexpected bundle layout)"
+    # For a non-default prefix, symlink into /usr/local/bin so `ollama` stays on PATH
     if [ "${prefix}" != "/usr/local" ]; then
         ${sudo_cmd} ln -sf "${ollama_bin}" /usr/local/bin/ollama
     fi
 
-    # ollama 系统用户/组(与官方 install.sh 一致)
+    # The ollama system user and group, matching the official install.sh
     getent group ollama >/dev/null 2>&1 || ${sudo_cmd} groupadd -r ollama
     id ollama >/dev/null 2>&1 || \
         ${sudo_cmd} useradd -r -s /bin/false -g ollama -d /usr/share/ollama ollama
     ${sudo_cmd} mkdir -p /usr/share/ollama
     ${sudo_cmd} chown ollama:ollama /usr/share/ollama
 
-    # systemd unit(只监听 127.0.0.1,与 NimoOS 各服务绑 localhost 的约定一致)
+    # systemd unit. Listens on 127.0.0.1 only, as every NimoOS service does.
     ${sudo_cmd} tee /etc/systemd/system/ollama.service >/dev/null <<UNIT
 [Unit]
 Description=Ollama Service
@@ -125,11 +132,12 @@ UNIT
     ${sudo_cmd} systemctl daemon-reload
     # Enable but don't start yet — user can pull models after
     ${sudo_cmd} systemctl enable ollama 2>/dev/null || true
-    log_ok "Ollama installed from OSS."
+    log_ok "Ollama installed from the dependency mirror."
 }
 
 ###############################################################################
-# 2. 部署 Agent 容器(离线镜像包 + compose),取代旧的 host venv 安装
+# 2. Deploy the Agent container (offline image plus compose), replacing the
+#    older host-venv installation
 ###############################################################################
 
 AGENT_BUNDLE_PROJECT="NimoOS-AI"
@@ -137,23 +145,24 @@ AGENT_BUNDLE_VERSION="${STACK_VERSION_AIAGENT:-${STACK_VERSION}}"
 
 setup_agent() {
     if ! command -v docker >/dev/null 2>&1; then
-        log_warn "docker 未安装,跳过 Agent 容器部署(核心安装阶段应已装 docker)。"
+        log_warn "docker is not installed, skipping the Agent container (the core install stage should have provided it)."
         return 0
     fi
 
-    # 本地开发:仓库内已有打好的包则用之;否则从 OSS 下 agent-<ver> 包
+    # Development: use the bundle already built in the repository if present,
+    # otherwise download the agent-<ver> bundle
     local bundle_tar=""
     local local_bundle="${SCRIPT_DIR}/../../NimoOS-AI/dist/nimoos-agent-${AGENT_BUNDLE_VERSION}.tar.gz"
     if [ -f "${local_bundle}" ]; then
         bundle_tar="${local_bundle}"
-        log_info "Agent 包(本地): ${bundle_tar}"
+        log_info "Agent bundle (local): ${bundle_tar}"
     else
-        local url="${NIMO_DOWNLOAD_DOMAIN}${NIMO_OSS_PREFIX}/${AGENT_BUNDLE_PROJECT}/releases/download/agent-${AGENT_BUNDLE_VERSION}/nimoos-agent-${AGENT_BUNDLE_VERSION}.tar.gz"
+        local url="${NIMO_DOWNLOAD_DOMAIN}${NIMO_KEY_PREFIX}/${AGENT_BUNDLE_PROJECT}/releases/download/agent-${AGENT_BUNDLE_VERSION}/nimoos-agent-${AGENT_BUNDLE_VERSION}.tar.gz"
         bundle_tar="$(mktemp)"
-        log_info "下载 Agent 离线包: ${url}"
+        log_info "Downloading the Agent offline bundle: ${url}"
         if ! curl -fSL --retry 3 --connect-timeout 10 -o "${bundle_tar}" "${url}"; then
             rm -f "${bundle_tar}"
-            log_fail "Agent 离线包下载失败: ${url}"
+            log_fail "Agent offline bundle download failed: ${url}"
         fi
     fi
 
@@ -161,16 +170,16 @@ setup_agent() {
     tar -xzf "${bundle_tar}" -C "${stage}"
     [[ "${bundle_tar}" == /tmp/* ]] && rm -f "${bundle_tar}"
 
-    # 停用旧的 host venv systemd unit(若存在),交给 compose 接管
+    # Disable the old host-venv systemd unit if present; compose takes over
     if systemctl list-unit-files 2>/dev/null | grep -q '^nimoos-agent\.service'; then
-        log_info "停用旧 nimoos-agent.service(改由容器接管)..."
+        log_info "Disabling the old nimoos-agent.service; the container takes over ..."
         ${sudo_cmd} systemctl disable --now nimoos-agent.service 2>/dev/null || true
     fi
 
-    log_info "部署 Agent 容器(${stage}/install.sh)..."
+    log_info "Deploying the Agent container via ${stage}/install.sh ..."
     ${sudo_cmd} bash "${stage}/install.sh"
     rm -rf "${stage}"
-    log_ok "Agent 容器已部署。"
+    log_ok "Agent container deployed."
 }
 
 ###############################################################################
@@ -180,7 +189,7 @@ setup_agent() {
 log_info "=== NimoOS AI Services Installer ==="
 install_ollama
 if [ "${OLLAMA_ONLY}" = "1" ]; then
-    log_ok "--ollama-only: 跳过 Agent 部署。"
+    log_ok "--ollama-only: skipping the Agent deployment."
 else
     setup_agent
 fi

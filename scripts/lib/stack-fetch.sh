@@ -1,24 +1,60 @@
 #!/usr/bin/env bash
-# stack-fetch.sh — 共享库:为 install-*.sh 提供「双模式产物获取」
+# stack-fetch.sh — shared library giving install-*.sh a dual-mode payload lookup
 #
-#   开发机(有源码)   → 直接用同级 NimoOS-* 源码目录(保持原有行为)
-#   终端用户(无源码) → 从深圳 OSS 下载对应 release tar 并解包到临时目录
+#   development machine (source present) -> use the sibling NimoOS-* source tree
+#   end user (no source)                 -> download the matching release tarball
+#                                           and unpack it into a temp directory
 #
-# 被各 install-*.sh 通过 `source .../lib/stack-fetch.sh` 引入。
-# 下载域名/前缀/版本可由环境变量覆盖(供 nimoos-stack-install.sh 统一注入)。
+# Pulled in by each install-*.sh via `source .../lib/stack-fetch.sh`.
+# The download domain, key prefix and version can all be overridden by
+# environment variables, which is how nimoos-stack-install.sh applies one
+# version across every component.
 
-# 上传与安装统一走深圳(与 release/versions.conf 的 DOWNLOAD_DOMAIN 一致)
-: "${NIMO_DOWNLOAD_DOMAIN:=https://nimoos.oss-cn-shenzhen.aliyuncs.com/}"
-: "${NIMO_OSS_PREFIX:=NimoTech}"
-# 第三方依赖(qdrant / ollama 等官方二进制包)托管在 OSS 的 deps/ 下,
-# 让无法直连 github.com / ollama.com 的机器也能装。布局:
+# Downloads come from the same domain that release/versions.conf uploads to.
+: "${NIMO_DOWNLOAD_DOMAIN:=https://nimoos-public.s3.us-east-2.amazonaws.com/}"
+# Third-party dependencies (the official qdrant, ollama and similar binaries) are
+# mirrored under deps/ so machines with no direct route to github.com or
+# ollama.com can still install. Layout:
 #   ${NIMO_DEPS_BASE}/qdrant/qdrant-<arch>.tar.gz
 #   ${NIMO_DEPS_BASE}/ollama/ollama-linux-<arch>.tar.zst
-: "${NIMO_DEPS_BASE:=https://nimoos.oss-cn-shenzhen.aliyuncs.com/deps}"
-# 各组件默认版本(可被环境变量覆盖,如 STACK_VERSION_PARSER)
-: "${STACK_VERSION:=v1.9.1-alpha1}"
+: "${NIMO_DEPS_BASE:=https://nimoos-public.s3.us-east-2.amazonaws.com/deps}"
 
-# uname -m → release 架构 token
+# release/versions.conf is the single source of truth for both the version and the
+# key prefix, so read them from it when this library sits inside a checkout. Run
+# standalone — bootstrapped into a temp directory by `curl | bash` — there is no
+# versions.conf to read and the literal fallbacks below apply.
+#
+# The prefix must agree with what upload-dist.sh writes. It did not: uploads went
+# to S3_PREFIX while this library looked under a hardcoded "NimoTech", left over
+# from the Aliyun layout that mirrored github.com/NimoTech/<project>/. Every
+# stack component would have 404'd. Reading one value from one file prevents the
+# two sides drifting apart again.
+_sf_conf_value() {   # _sf_conf_value <KEY> -> value, or empty
+    local dir conf
+    dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+    [ -n "${dir}" ] || return 0
+    conf="${dir}/../../release/versions.conf"
+    [ -f "${conf}" ] || return 0
+    # grep the one key rather than sourcing the file, which would also pull in
+    # every VERSION_* and the S3 settings.
+    grep -m1 "^$1=" "${conf}" | cut -d= -f2- | tr -d '"\r'
+}
+
+if [ -z "${STACK_VERSION:-}" ]; then
+    _sf_ver="$(_sf_conf_value NIMOOS_VERSION)"
+    [ -n "${_sf_ver}" ] && STACK_VERSION="v${_sf_ver}"
+    unset _sf_ver
+fi
+: "${STACK_VERSION:=v1.9.4-alpha1}"
+
+# Key prefix under the download domain. NIMO_OSS_PREFIX is the former name and is
+# still honoured so existing environments keep working.
+if [ -z "${NIMO_KEY_PREFIX:-}" ] && [ -z "${NIMO_OSS_PREFIX:-}" ]; then
+    NIMO_KEY_PREFIX="$(_sf_conf_value S3_PREFIX)"
+fi
+: "${NIMO_KEY_PREFIX:=${NIMO_OSS_PREFIX:-nimoos}}"
+
+# uname -m -> the architecture token used in release file names
 stack_arch() {
     case "$(uname -m)" in
         x86_64)         echo "amd64" ;;
@@ -30,32 +66,35 @@ stack_arch() {
 }
 
 # stack_download <project> <version> <tarfile> <dest_dir>
-#   把 OSS 上的 tar 下载并解包进 dest_dir(需已存在)。失败返回非 0。
+#   Download the tarball and unpack it into dest_dir, which must already exist.
+#   Returns non-zero on failure.
 stack_download() {
     local project="$1" version="$2" tarfile="$3" dest="$4"
-    local url="${NIMO_DOWNLOAD_DOMAIN}${NIMO_OSS_PREFIX}/${project}/releases/download/${version}/${tarfile}"
+    local url="${NIMO_DOWNLOAD_DOMAIN}${NIMO_KEY_PREFIX}/${project}/releases/download/${version}/${tarfile}"
     local tmp
     tmp="$(mktemp)"
     echo "[fetch] ${url}" >&2
     if ! curl -fSL --retry 3 --connect-timeout 10 -o "${tmp}" "${url}"; then
         rm -f "${tmp}"
-        echo "[fetch] 下载失败: ${url}" >&2
+        echo "[fetch] download failed: ${url}" >&2
         return 1
     fi
     if ! tar -xzf "${tmp}" -C "${dest}"; then
         rm -f "${tmp}"
-        echo "[fetch] 解包失败: ${tarfile}" >&2
+        echo "[fetch] could not unpack: ${tarfile}" >&2
         return 1
     fi
     rm -f "${tmp}"
 }
 
 # stack_resolve <src_dir> <project> <version> <arch_mode> <token>
-#   决定组件产物根目录并打印到 stdout:
-#     - src_dir 存在 → 回显 src_dir(开发机源码模式,调用方按原逻辑 build/拷贝)
-#     - 否则        → 下载 linux-<arch|all>-<token>-<version>.tar.gz 解到临时目录并回显该目录
-#   解包后的目录布局与源码仓库一致(均含 build/sysroot/...),调用方无需区分。
-#   返回值:0=源码模式, 10=OSS 模式(已下载), 非0=失败
+#   Work out the component's payload root and print it to stdout:
+#     - src_dir exists -> echo src_dir; the caller builds or copies from source
+#     - otherwise      -> download linux-<arch|all>-<token>-<version>.tar.gz,
+#                         unpack it into a temp directory and echo that
+#   The unpacked layout matches the source repository (both contain
+#   build/sysroot/...), so callers do not need to tell the two apart.
+#   Returns: 0 = source mode, 10 = downloaded, anything else = failure
 stack_resolve() {
     local src_dir="$1" project="$2" version="$3" arch_mode="$4" token="$5"
     if [ -n "${src_dir}" ] && [ -d "${src_dir}" ]; then
@@ -75,8 +114,9 @@ stack_resolve() {
 }
 
 # stack_fetch_dep <relpath> <dest_file>
-#   从 OSS deps/ 下载第三方依赖包到 dest_file。relpath 形如 qdrant/qdrant-x86_64-...
-#   成功返回 0,失败(网络/404)返回非 0,由调用方决定是否回退到上游官方源。
+#   Download a third-party dependency from deps/ into dest_file. relpath looks
+#   like qdrant/qdrant-x86_64-... Returns 0 on success and non-zero on a network
+#   error or 404, leaving it to the caller to fall back to the upstream source.
 stack_fetch_dep() {
     local relpath="$1" dest="$2"
     local url="${NIMO_DEPS_BASE}/${relpath}"
