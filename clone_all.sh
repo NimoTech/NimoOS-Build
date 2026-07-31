@@ -49,11 +49,13 @@ NIMOTECH_REPOS=(
     "NimoOS-Common"         # shared library: JWT, zap, HTTP, inter-service SDK
     "NimoOS-CLI"            # Cobra CLI for administration and diagnostics
     "NimoOS-UI"             # Vue 2 SPA
-    "NimoOS-get get"        # one-line installer scripts (cloned into get/)
 )
 
-# Not cloned: nimo_os_docs is an internal documentation repository and is
-# private. Nothing here depends on it — a build needs only the repositories above.
+# Not cloned:
+#   nimo_os_docs is an internal documentation repository and is private.
+#   NimoOS-get is deprecated — its v0.4.x-era installers were superseded by the
+#     ones in this repository. It is kept for history only.
+# Nothing here depends on either; a build needs only the repositories above.
 
 success=0
 failed=0
