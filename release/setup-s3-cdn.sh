@@ -31,6 +31,8 @@
 # Usage:
 #   ./setup-s3-cdn.sh --dry-run     # print every AWS call without running it
 #   ./setup-s3-cdn.sh               # create or reconcile
+#   ./setup-s3-cdn.sh --force       # ... even if the bucket is serving downloads
+#                                   #     right now (this takes them offline)
 #   ./setup-s3-cdn.sh --show        # print current state and the CDN domain
 #
 # Credentials come from the standard AWS chain (~/.aws/credentials, environment,
@@ -45,10 +47,12 @@ source "${SELF_DIR}/versions.conf"
 
 DRY_RUN=0
 SHOW_ONLY=0
+FORCE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
         --show)    SHOW_ONLY=1 ;;
+        --force)   FORCE=1 ;;
         -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -139,9 +143,43 @@ else
     ok "bucket created"
 fi
 
-# All four blocks stay on. The OAC grant in step 4 names a service principal
-# (cloudfront.amazonaws.com) restricted by SourceArn, which S3 does not classify
-# as public, so BlockPublicPolicy does not stand in its way. Leaving those two
+# Refuse to lock a bucket that is currently serving downloads directly.
+#
+# Turning BlockPublicPolicy on disables the anonymous-read policy that
+# setup-s3-public.sh installs, so running this script against a live public bucket
+# takes every download offline the moment step 1 completes — before the
+# distribution that is supposed to replace it even exists. That is a real outage,
+# and it has happened: re-running this script merely to retry CreateDistribution
+# 403'd every install script, dependency and app icon until the block was undone.
+#
+# The header explains the two scripts are a sequence. An explanation is not a
+# guard, so this is a guard. --force says you mean it.
+if [ "${DRY_RUN}" -eq 0 ] && [ "${FORCE:-0}" -eq 0 ]; then
+    if aws s3api get-bucket-policy --bucket "${S3_BUCKET}" --region "${AWS_REGION}" \
+        --query Policy --output text 2>/dev/null | grep -q '"Principal"[[:space:]]*:[[:space:]]*"\*"'; then
+        die "$(cat <<EOF
+${S3_BUCKET} currently serves downloads anonymously, via the public bucket policy.
+
+Continuing would switch BlockPublicPolicy on, which disables that policy and takes
+every download offline immediately — the CloudFront distribution is not ready to
+take over yet.
+
+Do the cutover deliberately instead:
+  1. ./setup-s3-cdn.sh --force        # lock the bucket and create the distribution
+  2. wait for 'Deployed':  ./setup-s3-cdn.sh --show
+  3. set DOWNLOAD_DOMAIN to the distribution domain in versions.conf
+  4. re-run sync-install-script.sh and re-upload the install scripts
+
+To retry only the distribution without touching the bucket, use --force once the
+CloudFront account hold is lifted; the earlier steps are idempotent.
+EOF
+)"
+    fi
+fi
+
+# All four blocks on: the OAC grant in step 4 names a service principal
+# (cloudfront.amazonaws.com) restricted by SourceArn, which S3 does not classify as
+# public, so BlockPublicPolicy does not stand in its way. Leaving those two
 # switches off would only make a later accidentally-public policy possible.
 run s3api put-public-access-block --bucket "${S3_BUCKET}" \
     --public-access-block-configuration \
