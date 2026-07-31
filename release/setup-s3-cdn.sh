@@ -292,8 +292,11 @@ if [ "${DRY_RUN}" -eq 0 ]; then
     echo "1. Wait until 'Deployed':   ./setup-s3-cdn.sh --show"
     echo "2. Point downloads at it, in versions.conf:"
     echo "     DOWNLOAD_DOMAIN=\"https://${CDN_DOMAIN}/\""
-    echo "3. Regenerate the install script URLs:"
-    echo "     ../../nimo_os_docs/release/sync-install-script.sh"
+    echo "3. Regenerate the URLs baked into nimoos-install.sh, with the release"
+    echo "   tooling's sync-install-script.sh. That tool lives in a separate"
+    echo "   private repository; if you are running your own distribution, the"
+    echo "   equivalent step is rewriting NIMO_DOWNLOAD_DOMAIN and NIMO_PACKAGES"
+    echo "   in nimoos-install.sh from versions.conf."
     echo "4. Let install-script uploads invalidate the CDN:"
     echo "     export CLOUDFRONT_DISTRIBUTION_ID=${DIST_ID}"
     echo
