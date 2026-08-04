@@ -1,0 +1,274 @@
+name: release
+
+# Publishes a GitHub Release carrying the same component tarballs release.sh
+# uploads to S3.
+#
+# Deliberately a second channel, not a replacement. The product install path
+# (install.sh -> S3) is unchanged and still driven by release.sh. What this adds
+# is the front door: an open-source project whose Releases page is empty looks
+# abandoned, and until now pushing a tag produced nothing anywhere.
+#
+# The artifacts have the same name and shape as the S3 ones —
+# linux-<arch>-<token>-<version>.tar.gz containing a build/ tree with the binary
+# at build/sysroot/usr/bin/<name> — so anything that installs from S3 can
+# install from here.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      components:
+        description: 'Component keys to build, comma-separated, or "all"'
+        default: all
+      publish:
+        description: 'Create the GitHub Release (leave off for a build-only dry run)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out NimoOS-Build
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: NimoOS-Build
+
+      # The cross compilers release.sh's arch_to_cc() names. arm-7 and riscv64
+      # are supported by release.sh but left out here: no NAS this ships to is
+      # 32-bit ARM or RISC-V, and each extra architecture is another full build
+      # of twelve services. Add gcc-arm-linux-gnueabihf / gcc-riscv64-linux-gnu
+      # and the matrix entry if that changes.
+      - name: Install cross toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu
+
+      # One toolchain builds every component. The repositories declare go 1.21,
+      # 1.22 and 1.23.0, so the newest wins; Go's own toolchain directive would
+      # fetch a newer one if a module ever needed it.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.23'
+
+      # Which repositories to clone comes from component_registry, so adding a
+      # component there needs no change here.
+      #
+      # NimoOS-Common and NimoOS-MessageBus are not components but every service
+      # needs them on disk: go.mod redirects NimoOS-Common to ../NimoOS-Common,
+      # and several go:generate directives read ../NimoOS-MessageBus's spec.
+      - name: Check out the component repositories
+        env:
+          GH_TOKEN: ${{ secrets.CI_SIBLING_TOKEN || github.token }}
+          COMPONENTS: ${{ inputs.components || 'all' }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . NimoOS-Build/release/lib/common.sh
+
+          repos="NimoOS-Common NimoOS-MessageBus"
+          while IFS='|' read -r key dir _proj type _am _bin _tok _vv _mig; do
+            [ "$type" = go ] || continue
+            if [ "$COMPONENTS" != all ]; then
+              printf '%s' ",$COMPONENTS," | grep -q ",$key," || continue
+            fi
+            repos="$repos $dir"
+          done <<EOF
+          $(component_registry)
+          EOF
+
+          for r in $(printf '%s\n' $repos | sort -u); do
+            echo "cloning $r"
+            gh repo clone "NimoTech/$r" "$r" -- --depth 1 --quiet
+          done
+
+      # Reproduces release.sh's go_build_binary(): cgo with a cross CC, fully
+      # static, the same build tags, and the version injected through the symbol
+      # table both deploy.sh and release.sh use.
+      #
+      # NIMOOS_BUILD is the run number. version_inject.sh documents this as the
+      # CI path: with it set the version is <ver>+<n> and carries no .g<sha>
+      # suffix, which is what distinguishes a release artifact from a dev build.
+      # It also sidesteps the machine-local counter, which no runner has.
+      - name: Build
+        env:
+          ARCH: ${{ matrix.arch }}
+          NIMOOS_BUILD: ${{ github.run_number }}
+          COMPONENTS: ${{ inputs.components || 'all' }}
+        run: |
+          set -euo pipefail
+          . NimoOS-Build/release/lib/common.sh
+          . NimoOS-Build/release/versions.conf
+          . NimoOS-Build/release/lib/version_inject.sh
+
+          goarch="$(arch_to_goarch "$ARCH")"
+          goarm="$(arch_to_goarm "$ARCH")"
+          cc="$(arch_to_cc "$ARCH")"
+          command -v "$cc" >/dev/null || { echo "::error::$cc is not installed"; exit 1; }
+
+          out="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$out"
+          built=0
+
+          while IFS='|' read -r key dir _proj type _am bin token vervar _mig; do
+            [ "$type" = go ] || continue
+            if [ "$COMPONENTS" != all ]; then
+              printf '%s' ",$COMPONENTS," | grep -q ",$key," || continue
+            fi
+            version="${!vervar}"
+            [ -n "$version" ] || { echo "::error::$key has no version in versions.conf ($vervar)"; exit 1; }
+
+            echo "::group::$key — $token $version linux/$ARCH"
+            staging="$(mktemp -d)"
+            cp -a "$dir/build" "$staging/build"
+            mkdir -p "$staging/build/sysroot/usr/bin"
+
+            # codegen/ is gitignored in several repositories, so this is not
+            # optional. Failures are surfaced rather than swallowed: release.sh
+            # tolerates them because a developer tree usually already has the
+            # generated code, which is never true on a runner.
+            ( cd "$dir" && go generate ./... )
+
+            # token minus the "nimoos-" prefix is the GO_VERSION_SYM key; core's
+            # token is a bare "nimoos". A component with no entry (cli) gets no
+            # version injected, exactly as release.sh treats it.
+            sym="${GO_VERSION_SYM[${token#nimoos-}]:-}"
+            verflag=""
+            if [ -n "$sym" ]; then
+              full="$(cd "$dir" && resolve_full_version)"
+              verflag="-X $sym=$full"
+              echo "injecting $sym=$full"
+            else
+              echo "no version symbol registered for $key; building without version injection"
+            fi
+
+            commit="$(git -C "$dir" rev-parse HEAD)"
+            built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+            ( cd "$dir" && CGO_ENABLED=1 GOOS=linux GOARCH="$goarch" GOARM="$goarm" CC="$cc" \
+              go build \
+                -ldflags "$verflag -X main.commit=$commit -X main.date=$built_at -s -w -extldflags '-static'" \
+                -tags "musl netgo osusergo" \
+                -o "$staging/build/sysroot/usr/bin/$bin" . )
+
+            # The terminal component ships ttyd next to its own binary. Both
+            # sources are public, so nothing here needs credentials.
+            if [ "$token" = nimoos-terminal ]; then
+              case "$ARCH" in
+                amd64) asset=ttyd.x86_64 ;;
+                arm64) asset=ttyd.aarch64 ;;
+                *)     asset='' ;;
+              esac
+              if [ -n "$asset" ]; then
+                dest="$staging/build/sysroot/usr/lib/nimoos/ttyd"
+                mkdir -p "$(dirname "$dest")"
+                curl -fsSL --connect-timeout 20 -o "$dest" \
+                  "${DOWNLOAD_DOMAIN}ttyd/${TTYD_VERSION}/${asset}" \
+                  || curl -fsSL --connect-timeout 20 -o "$dest" \
+                     "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${asset}"
+                chmod 755 "$dest"
+              fi
+            fi
+
+            tar="$out/linux-${ARCH}-${token}-${version}.tar.gz"
+            tar -czf "$tar" -C "$staging" build
+            # Same check verify_tar() makes: an archive missing its own binary is
+            # worse than a failed build, because it installs and then does not run.
+            #
+            # The listing goes into a variable first, for the reason verify_tar()
+            # documents: under `set -o pipefail`, `tar | grep -q` fails even on a
+            # match, because grep closes the pipe on its first hit and tar dies of
+            # SIGPIPE with status 141. Writing it the obvious way made this step
+            # reject a perfectly good archive.
+            listing="$(tar -tzf "$tar")"
+            printf '%s\n' "$listing" | grep -q "build/sysroot/usr/bin/$bin" \
+              || { echo "::error::$tar has no build/sysroot/usr/bin/$bin"; exit 1; }
+            rm -rf "$staging"
+            built=$((built + 1))
+            echo "::endgroup::"
+          done <<EOF
+          $(component_registry)
+          EOF
+
+          echo "built $built component(s) for linux/$ARCH"
+          [ "$built" -gt 0 ] || { echo "::error::nothing matched — check the components input"; exit 1; }
+          ls -la "$out"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # A real tag always publishes; a dispatch run only when asked, so the
+    # workflow can be exercised without creating a release.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          . release/versions.conf
+
+          tag="$GITHUB_REF_NAME"
+          case "$tag" in
+            v*) ;;
+            *) tag="v${NIMOOS_VERSION}" ;;   # dispatch run: name it from versions.conf
+          esac
+
+          count=$(find dist -name '*.tar.gz' | wc -l)
+          [ "$count" -gt 0 ] || { echo "::error::no artifacts to publish"; exit 1; }
+          echo "publishing $count artifact(s) as $tag"
+          ls -la dist
+
+          cat > /tmp/notes.md <<'NOTES'
+          Component tarballs for this release, built by CI.
+
+          Each archive unpacks to a `build/` tree with the service binary at
+          `build/sysroot/usr/bin/`, which is the layout the installer expects —
+          these are interchangeable with the artifacts served from S3.
+
+          You do not need to download them by hand to install NimoOS; see the
+          README for the one-line installer.
+          NOTES
+          sed -i 's/^          //' /tmp/notes.md
+
+          pre=''
+          case "$NIMOOS_VERSION" in *-alpha*|*-beta*|*-rc*) pre='--prerelease' ;; esac
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.tar.gz --clobber
+          else
+            # shellcheck disable=SC2086
+            gh release create "$tag" dist/*.tar.gz \
+              --title "NimoOS $tag" \
+              --notes-file /tmp/notes.md \
+              $pre
+          fi
+          gh release view "$tag" --json assets --jq '.assets[].name'
