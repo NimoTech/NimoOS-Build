@@ -51,11 +51,10 @@ NIMOTECH_REPOS=(
     "NimoOS-UI"             # Vue 2 SPA
 )
 
-# Not cloned:
-#   nimo_os_docs is an internal documentation repository and is private.
-#   NimoOS-get is deprecated — its v0.4.x-era installers were superseded by the
-#     ones in this repository. It is kept for history only.
-# Nothing here depends on either; a build needs only the repositories above.
+# Not cloned: NimoOS's internal documentation repository, and the retired
+# v0.4.x-era installer repository whose scripts this one replaced. Both are
+# private, and nothing here depends on either — a build needs only the
+# repositories above.
 
 success=0
 failed=0
