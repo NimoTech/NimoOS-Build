@@ -90,9 +90,24 @@ jobs:
           $(component_registry)
           EOF
 
+          # Plain git clone, not `gh repo clone`. gh resolves the repository over
+          # GraphQL first, and a fine-grained token gets
+          #   GraphQL: Could not resolve to a Repository with the name '...'
+          # even with Contents: Read granted — GraphQL support for those tokens is
+          # limited. REST and git-over-HTTPS both work, which is what the
+          # credential helper below uses.
+          #
+          # The token goes into a credential file rather than a URL or a -c
+          # argument, so it never appears in a process's argv. The runner is
+          # discarded after the job, and the file is removed anyway.
+          printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$HOME/.git-credentials"
+          chmod 600 "$HOME/.git-credentials"
+          git config --global credential.helper store
+          trap 'rm -f "$HOME/.git-credentials"; git config --global --unset credential.helper || true' EXIT
+
           for r in $(printf '%s\n' $repos | sort -u); do
             echo "cloning $r"
-            gh repo clone "NimoTech/$r" "$r" -- --depth 1 --quiet
+            git clone --depth 1 --quiet "https://github.com/NimoTech/$r" "$r"
           done
 
       # Reproduces release.sh's go_build_binary(): cgo with a cross CC, fully
