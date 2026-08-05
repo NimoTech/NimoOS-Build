@@ -50,11 +50,21 @@ jobs:
       # 32-bit ARM or RISC-V, and each extra architecture is another full build
       # of twelve services. Add gcc-arm-linux-gnueabihf / gcc-riscv64-linux-gnu
       # and the matrix entry if that changes.
+      # libc6-dev-arm64-cross is listed explicitly and must stay that way. It is
+      # only a *Recommends* of gcc-aarch64-linux-gnu, so --no-install-recommends
+      # skips it, and then the first component with a real cgo dependency
+      # (NimoOS-AI, via mattn/go-sqlite3) fails with
+      #   /usr/include/stdlib.h:26:10: fatal error: bits/libc-header-start.h
+      # because the cross compiler, having no target headers, falls back to the
+      # host's /usr/include — where that file lives under x86_64-linux-gnu/.
+      # The six components before it in the build order have no cgo dependency
+      # and build fine, which makes this look like a problem with that one
+      # repository rather than with the toolchain.
       - name: Install cross toolchains
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu
+            gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       # One toolchain builds every component. The repositories declare go 1.21,
       # 1.22 and 1.23.0, so the newest wins; Go's own toolchain directive would
