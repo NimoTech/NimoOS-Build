@@ -200,20 +200,37 @@ Get_Download_Url_Domain() {
 }
 
 # 1 Check Arch
+#
+# Only amd64 is published. Releases have never contained arm64, armv7 or
+# riscv64 artifacts, so those architectures are refused here with an
+# explanation rather than allowed to proceed and fail on a 403 the user cannot
+# interpret. Removing the guard is not enough to support them — the artifacts
+# have to exist first.
+#
+# The previous version matched aarch64, then *64*, then armv7. Two problems:
+# arm64 and armv7 were accepted and then failed at download, and *64* also
+# matches riscv64 and ppc64le, so those were silently treated as amd64 and sent
+# x86 binaries.
 Check_Arch() {
     case $UNAME_M in
-    *aarch64*)
-        TARGET_ARCH="arm64"
-        ;;
-    *64*)
+    x86_64 | amd64)
         TARGET_ARCH="amd64"
         ;;
-    *armv7*)
-        TARGET_ARCH="arm-7"
+    *aarch64* | *arm64*)
+        Show 3 "NimoOS does not publish arm64 builds yet."
+        Show 2 "Detected: $UNAME_M"
+        Show 2 "Only linux/amd64 artifacts are released today. arm64 binaries do"
+        Show 2 "build and pass verification in CI, but they are not published, so"
+        Show 2 "there is nothing for this installer to download."
+        Show 1 "Aborted: no release artifacts for $UNAME_M"
+        ;;
+    *armv7* | *armv6* | *armhf*)
+        Show 3 "NimoOS does not publish 32-bit ARM builds."
+        Show 2 "Detected: $UNAME_M"
+        Show 1 "Aborted: no release artifacts for $UNAME_M"
         ;;
     *)
         Show 1 "Aborted, unsupported or unknown architecture: $UNAME_M"
-        exit 1
         ;;
     esac
     Show 0 "Your hardware architecture is : $UNAME_M"

@@ -36,8 +36,19 @@ jobs:
   build:
     strategy:
       fail-fast: false
+      # amd64 only, matching what is actually supported: nimoos-install.sh
+      # refuses every other architecture, because no release has ever contained
+      # anything else. Publishing arm64 archives here while the installer turns
+      # arm64 machines away would be worse than publishing none.
+      #
+      # arm64 does work. It was built and verified in this workflow before being
+      # switched off — aarch64 ELF, statically linked, version injected, correct
+      # aarch64 ttyd bundled. To turn it back on, add arm64 to this matrix; the
+      # toolchain step already installs everything it needs. The other half of
+      # supporting it is release.sh, which needs the same cross toolchain on
+      # whichever machine runs it.
       matrix:
-        arch: [amd64, arm64]
+        arch: [amd64]
     runs-on: ubuntu-latest
     steps:
       - name: Check out NimoOS-Build
@@ -50,16 +61,19 @@ jobs:
       # 32-bit ARM or RISC-V, and each extra architecture is another full build
       # of twelve services. Add gcc-arm-linux-gnueabihf / gcc-riscv64-linux-gnu
       # and the matrix entry if that changes.
-      # libc6-dev-arm64-cross is listed explicitly and must stay that way. It is
-      # only a *Recommends* of gcc-aarch64-linux-gnu, so --no-install-recommends
-      # skips it, and then the first component with a real cgo dependency
-      # (NimoOS-AI, via mattn/go-sqlite3) fails with
+      # The aarch64 packages are kept even though the matrix is amd64-only, so
+      # that re-enabling arm64 is a one-word change.
+      #
+      # libc6-dev-arm64-cross must stay listed explicitly. It is only a
+      # *Recommends* of gcc-aarch64-linux-gnu, so --no-install-recommends skips
+      # it, and then the first component with a real cgo dependency (NimoOS-AI,
+      # via mattn/go-sqlite3) fails with
       #   /usr/include/stdlib.h:26:10: fatal error: bits/libc-header-start.h
       # because the cross compiler, having no target headers, falls back to the
       # host's /usr/include — where that file lives under x86_64-linux-gnu/.
-      # The six components before it in the build order have no cgo dependency
-      # and build fine, which makes this look like a problem with that one
-      # repository rather than with the toolchain.
+      # The six components before it in registry order have no cgo dependency
+      # and cross-compile fine, which makes this look like a problem with that
+      # one repository rather than with the toolchain.
       - name: Install cross toolchains
         run: |
           sudo apt-get update
