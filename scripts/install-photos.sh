@@ -108,7 +108,7 @@ build_or_locate_binary() {
     fi
     local go_bin="/usr/local/go/bin/go"
     [[ -x "${go_bin}" ]] || go_bin="$(command -v go || true)"
-    [[ -n "${go_bin}" ]] || log_fail "no go toolchain found (looked in /usr/local/go/bin/go and \$PATH)"
+    [[ -n "${go_bin}" ]] || log_fail "no go toolchain found (looked in /usr/local/go/bin/go and \$PATH). Source mode was chosen because a local ${PROJECT} tree is present, and building it needs Go. Install Go, or move/rename that tree so the installer downloads the release tarball instead."
     pushd "${RESOLVED}" >/dev/null
     CGO_ENABLED=1 "${go_bin}" build -o "./${APP_NAME}" .
     popd >/dev/null

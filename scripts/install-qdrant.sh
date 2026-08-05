@@ -105,7 +105,7 @@ check_glibc() {
     fi
     # true when have >= need
     if [[ "$(printf '%s\n%s' "$need" "$have" | sort -V | head -1)" != "$need" ]]; then
-        log_fail "host GLIBC $have < $need. The qdrant binary is incompatible; stay on docker, this script does not suit your distribution."
+        log_fail "host GLIBC $have < $need, so the qdrant binary cannot run here. This script only converts an existing docker deployment to a native one, so there is nothing for it to do on this distribution — Debian 12 included, which ships 2.36. Run qdrant in docker instead, reachable on 127.0.0.1:6333, which is where parser, search and wiki look for it."
     fi
     log_ok "GLIBC $have >= $need"
 }

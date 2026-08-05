@@ -83,7 +83,12 @@ acquire() {
     esac
     SYSROOT="${RESOLVED}/build/sysroot"
     CONF_SAMPLE_SRC="${SYSROOT}/etc/nimoos/${APP_NAME_SHORT}.conf.sample"
-    UNIT_SRC="${SYSROOT}/lib/systemd/system/${SERVICE_FILE}"
+    # NimoOS-Search ships its unit at sysroot/usr/lib/systemd/system, like every
+    # other component; this looked under sysroot/lib and so could never find it,
+    # which made a source-mode install fail every time. The lib/ fallback stays
+    # for older payload layouts, matching install-parser.sh.
+    UNIT_SRC="${SYSROOT}/usr/lib/systemd/system/${SERVICE_FILE}"
+    [[ -f "${UNIT_SRC}" ]] || UNIT_SRC="${SYSROOT}/lib/systemd/system/${SERVICE_FILE}"
     [[ -f "${CONF_SAMPLE_SRC}" ]] || log_fail "sample configuration missing: ${CONF_SAMPLE_SRC}"
     [[ -f "${UNIT_SRC}" ]] || log_fail "systemd unit missing: ${UNIT_SRC}"
     log_ok "mode=${MODE}  payload=${RESOLVED}"
@@ -108,7 +113,7 @@ build_or_locate_binary() {
     log_info "source mode: building ${APP_NAME} (CGO=0, pure Go) ..."
     local go_bin="/usr/local/go/bin/go"
     [[ -x "${go_bin}" ]] || go_bin="$(command -v go || true)"
-    [[ -n "${go_bin}" ]] || log_fail "no go toolchain found (looked in /usr/local/go/bin/go and \$PATH)"
+    [[ -n "${go_bin}" ]] || log_fail "no go toolchain found (looked in /usr/local/go/bin/go and \$PATH). Source mode was chosen because a local ${PROJECT} tree is present, and building it needs Go. Install Go, or move/rename that tree so the installer downloads the release tarball instead."
 
     pushd "${RESOLVED}" >/dev/null
     CGO_ENABLED=0 "${go_bin}" build -o "./${APP_NAME}" .
