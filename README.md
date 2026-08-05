@@ -87,6 +87,35 @@ target machines.
 Parser is a Python service; use `uv` with Python 3.11 (`rapidocr-onnxruntime`
 has no wheel for 3.12 or later).
 
+**The UI takes its version from the environment.** `pnpm build` on its own
+produces a bundle labelled with a stale hardcoded version; `deploy-ui.sh`
+exports `NIMOOS_VERSION` and `NIMOOS_BUILD` from `versions.conf` first, so build
+it through that script (or export the same two variables yourself).
+
+## Installing what you built
+
+`scripts/deploy.sh <service>` replaces one binary and restarts its systemd unit,
+so it presumes NimoOS is **already installed** — it is a development loop, not a
+way to get from nothing to a running machine.
+
+To install from source on a fresh machine, give the installer a build directory
+instead of letting it download release tarballs:
+
+```bash
+sudo bash nimoos-install.sh -p /path/to/build
+```
+
+A release tarball is just one component's `build/` directory with its binary at
+`build/sysroot/usr/bin/<name>` (see any `.goreleaser.yaml`), and the installer
+untars all of them over each other before installing the union. So the build
+directory `-p` wants is the merge of every component's `build/` tree with the
+binaries you compiled dropped into `sysroot/usr/bin/` — including the
+`cmd/migration-tool` binaries, which the migration scripts invoke.
+
+The AI and RAG stack is a separate step and needs no build directory: each
+`scripts/install-*.sh` builds from a sibling source tree when it finds one and
+falls back to downloading a release tarball when it does not.
+
 ## Versioning
 
 `NIMOOS_VERSION` in `versions.conf` is the only value you edit by hand.

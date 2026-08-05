@@ -49,6 +49,7 @@ NIMOTECH_REPOS=(
     "NimoOS-Common"         # shared library: JWT, zap, HTTP, inter-service SDK
     "NimoOS-CLI"            # Cobra CLI for administration and diagnostics
     "NimoOS-UI"             # Vue 2 SPA
+    "NimoOS-KVM"            # optional add-on: libvirt VM management; not part of the core install
 )
 
 # Not cloned: NimoOS's internal documentation repository, and the retired

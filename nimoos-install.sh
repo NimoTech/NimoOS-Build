@@ -542,26 +542,23 @@ Install_rclone_from_source() {
     exit 1
   }
   ${sudo_cmd} rm -rf install.sh
-  Show 0 "Rclone v1.61.1 installed successfully."
+  Show 0 "Rclone $(rclone --version 2>/dev/null | head -n 1 | awk '{print $2}') installed successfully."
 }
 
 Install_Rclone() {
   Show 2 "Install the necessary dependencies: Rclone"
+  # Any rclone is good enough — we only shell out to it for cloud-storage mounts,
+  # and every version in the last several years supports what we call.
+  #
+  # This used to compare the installed version against a hardcoded "rclone
+  # v1.61.1" and, on a mismatch, delete rclone and reinstall it. But
+  # Install_rclone_from_source runs rclone's own installer, which always fetches
+  # the *current* release — so the pinned target could never be reached, and
+  # every run of this script (that is, every update) deleted a working rclone
+  # and downloaded a fresh copy, then reported the pinned version as the one it
+  # had installed. Keep what is already there instead.
   if [[ -x "$(command -v rclone)" ]]; then
-    version=$(rclone --version 2>>errors | head -n 1)
-    target_version="rclone v1.61.1"
-    rclone1="${PREFIX}/usr/share/man/man1/rclone.1.gz"
-    if [ "$version" != "$target_version" ]; then
-      Show 3 "Will change rclone from $version to $target_version."
-      rclone_path=$(command -v rclone)
-      ${sudo_cmd} rm -rf "${rclone_path}"
-      if [[ -f "$rclone1" ]]; then
-        ${sudo_cmd} rm -rf "$rclone1"
-      fi
-      Install_rclone_from_source
-    else
-      Show 2 "Target version already installed."
-    fi
+    Show 2 "Rclone already installed: $(rclone --version 2>/dev/null | head -n 1)"
   else
     Install_rclone_from_source
   fi
@@ -575,9 +572,44 @@ Install_Ollama() {
     return
   fi
   Show 2 "Installing Ollama..."
-  ${sudo_cmd} curl -fsSL https://ollama.com/install.sh | ${sudo_cmd} sh
-  ${sudo_cmd} systemctl enable ollama 2>/dev/null || true
-  Show 0 "Ollama installed."
+
+  # Delegate to install-ai.sh rather than running `curl ollama.com/install.sh | sh`.
+  #
+  # That script fetches its tarball from GitHub releases. On a network with no
+  # route to github.com the transfer stalls with no timeout, the archive arrives
+  # truncated, its own tar fails — and because we run under `set -e`, this
+  # installer died right here, at step 10 of 11. Every systemd unit was already
+  # installed and enabled but not one had been started, no completion banner was
+  # printed, and nothing in the output said why. install-ai.sh takes the same
+  # bundle from our own dependency mirror (which is also where the terminal gets
+  # ttyd) and writes the systemd unit we actually want, bound to 127.0.0.1.
+  #
+  # Non-fatal by design: Ollama only powers local inference. A machine without
+  # it is still a working NimoOS, so a failure here must warn and move on rather
+  # than take the whole install down with it.
+  local ai_sh="$(dirname "${BASH_SOURCE[0]:-$0}")/scripts/install-ai.sh"
+  if [ ! -f "${ai_sh}" ]; then
+    # Running from `curl | bash`, so there are no sibling scripts on disk.
+    # install-ai.sh sources lib/stack-fetch.sh, so fetch both.
+    local boot="${TMP_ROOT}/ollama-boot"
+    ${sudo_cmd} mkdir -p "${boot}/lib"
+    local f
+    for f in lib/stack-fetch.sh install-ai.sh; do
+      if ! ${sudo_cmd} curl -fsSL --connect-timeout 10 \
+          "${NIMO_DOWNLOAD_DOMAIN}get/scripts/${f}" -o "${boot}/${f}"; then
+        Show 3 "Could not download ${f}; skipping Ollama (local inference unavailable)."
+        return
+      fi
+    done
+    ai_sh="${boot}/install-ai.sh"
+  fi
+
+  if ${sudo_cmd} bash "${ai_sh}" --ollama-only; then
+    ${sudo_cmd} systemctl enable ollama 2>/dev/null || true
+    Show 0 "Ollama installed."
+  else
+    Show 3 "Ollama install failed (non-fatal); local inference unavailable. Rerun later with: bash scripts/install-ai.sh --ollama-only"
+  fi
 }
 
 # The terminal component depends on tmux and ttyd.
@@ -811,7 +843,15 @@ Check_Service_status() {
 
 # Get the physical NIC IP
 Get_IPs() {
-    PORT=$(${sudo_cmd} cat ${NIMO_CONF_PATH} | grep port | sed 's/port=//')
+    # Anchor the key and default to 80.
+    #
+    # `grep port` also matched `sslport=443`, so PORT came out as two lines of
+    # junk; and the shipped gateway.ini leaves `port=` empty, since the gateway
+    # defaults to 80 on its own. The arithmetic test below then failed and the
+    # banner printed "http://<ip>:" — a broken URL as the last thing a first-time
+    # installer sees.
+    PORT=$(${sudo_cmd} grep -m1 '^port=' "${NIMO_CONF_PATH}" 2>/dev/null | sed 's/^port=//')
+    [[ "${PORT}" =~ ^[0-9]+$ ]] || PORT=80
     ALL_NIC=$($sudo_cmd ls /sys/class/net/ | grep -v "$(ls /sys/devices/virtual/net/)")
     for NIC in ${ALL_NIC}; do
         IP=$($sudo_cmd ifconfig "${NIC}" | grep inet | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed -e 's/addr://g')
