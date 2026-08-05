@@ -90,25 +90,37 @@ jobs:
           $(component_registry)
           EOF
 
-          # Plain git clone, not `gh repo clone`. gh resolves the repository over
-          # GraphQL first, and a fine-grained token gets
-          #   GraphQL: Could not resolve to a Repository with the name '...'
-          # even with Contents: Read granted — GraphQL support for those tokens is
-          # limited. REST and git-over-HTTPS both work, which is what the
-          # credential helper below uses.
+          # Two things had to be got right here, both found by failed dry runs.
           #
-          # The token goes into a credential file rather than a URL or a -c
-          # argument, so it never appears in a process's argv. The runner is
-          # discarded after the job, and the file is removed anyway.
-          printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$HOME/.git-credentials"
-          chmod 600 "$HOME/.git-credentials"
-          git config --global credential.helper store
-          trap 'rm -f "$HOME/.git-credentials"; git config --global --unset credential.helper || true' EXIT
+          # 1. Not `gh repo clone`. gh resolves the repository over GraphQL first,
+          #    and a fine-grained token gets
+          #      GraphQL: Could not resolve to a Repository with the name '...'
+          #    even with Contents: Read granted on it — GraphQL support for those
+          #    tokens is limited. REST and git-over-HTTPS both see it fine, which
+          #    is why the token verified clean locally: those probes used `gh api`
+          #    and `git ls-remote`.
+          #
+          # 2. An extraheader, not a credential helper. A credential helper is
+          #    only consulted after a 401, and actions/checkout has already
+          #    installed an http.extraheader carrying the default job token. git
+          #    sends that unconditionally, GitHub answers 404 for a repository
+          #    that token cannot see, and the helper is never reached — the
+          #    failure reads as "Repository not found", which looks nothing like
+          #    an auth problem. So the header is replaced rather than supplemented.
+          #
+          # The value goes through a config file rather than `git -c`, so the
+          # token never appears in any process's argv.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
+          unset auth
+          trap 'git config --global --unset-all http.https://github.com/.extraheader || true' EXIT
 
           for r in $(printf '%s\n' $repos | sort -u); do
             echo "cloning $r"
             git clone --depth 1 --quiet "https://github.com/NimoTech/$r" "$r"
           done
+          echo "cloned: $(printf '%s\n' $repos | sort -u | tr '\n' ' ')"
 
       # Reproduces release.sh's go_build_binary(): cgo with a cross CC, fully
       # static, the same build tags, and the version injected through the symbol
