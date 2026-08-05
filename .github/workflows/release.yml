@@ -90,26 +90,22 @@ jobs:
           $(component_registry)
           EOF
 
-          # Two things had to be got right here, both found by failed dry runs.
+          # Not `gh repo clone`: gh resolves the repository over GraphQL first,
+          # and a fine-grained token gets
+          #   GraphQL: Could not resolve to a Repository with the name '...'
+          # even with Contents: Read granted on it, because GraphQL support for
+          # those tokens is limited. REST and git-over-HTTPS both see it fine.
           #
-          # 1. Not `gh repo clone`. gh resolves the repository over GraphQL first,
-          #    and a fine-grained token gets
-          #      GraphQL: Could not resolve to a Repository with the name '...'
-          #    even with Contents: Read granted on it — GraphQL support for those
-          #    tokens is limited. REST and git-over-HTTPS both see it fine, which
-          #    is why the token verified clean locally: those probes used `gh api`
-          #    and `git ls-remote`.
+          # Auth goes in as an http.extraheader — the same mechanism
+          # actions/checkout uses — and through a config file rather than
+          # `git -c`, so the token never appears in any process's argv.
           #
-          # 2. An extraheader, not a credential helper. A credential helper is
-          #    only consulted after a 401, and actions/checkout has already
-          #    installed an http.extraheader carrying the default job token. git
-          #    sends that unconditionally, GitHub answers 404 for a repository
-          #    that token cannot see, and the helper is never reached — the
-          #    failure reads as "Repository not found", which looks nothing like
-          #    an auth problem. So the header is replaced rather than supplemented.
-          #
-          # The value goes through a config file rather than `git -c`, so the
-          # token never appears in any process's argv.
+          # If this ever fails with "remote: Repository not found", check whether
+          # CI_SIBLING_TOKEN is actually set on this repository before suspecting
+          # the mechanism. GitHub answers 404 rather than 403 for a private
+          # repository the caller cannot see, so a missing secret — the workflow
+          # then falls back to the job token, which can only see this repo —
+          # looks exactly like a nonexistent repository. It cost two dry runs.
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git config --global --unset-all http.https://github.com/.extraheader || true
           git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
