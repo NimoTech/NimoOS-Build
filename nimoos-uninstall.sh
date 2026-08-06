@@ -127,18 +127,23 @@ Detecting_NimoOS() {
     fi
 }
 
+# docker takes one id per argument. Quoting the command substitution passes the
+# whole newline-separated list as a single argument, and the daemon answers
+#   Error response from daemon: page not found
+# so nothing is ever removed. xargs splits it and also does the right thing when
+# the list is empty.
 Unistall_Container() {
     if [[ ${UNINSTALL_ALL_CONTAINER} == true && "$(${sudo_cmd} docker ps -aq)" != "" ]]; then
         Show 2 "Start deleting containers."
-        ${sudo_cmd} docker stop "$(${sudo_cmd} docker ps -aq)" || Show 1 "Failed to stop containers."
-        ${sudo_cmd} docker rm "$(${sudo_cmd} docker ps -aq)" || Show 1 "Failed to delete all containers."
+        ${sudo_cmd} docker ps -aq | xargs -r ${sudo_cmd} docker stop || Show 1 "Failed to stop containers."
+        ${sudo_cmd} docker ps -aq | xargs -r ${sudo_cmd} docker rm || Show 1 "Failed to delete all containers."
     fi
 }
 
 Remove_Images() {
     if [[ ${REMOVE_IMAGES} == "all" && "$(${sudo_cmd} docker images -q)" != "" ]]; then
         Show 2 "Start deleting all images."
-        ${sudo_cmd} docker rmi "$(${sudo_cmd} docker images -q)" || Show 1 "Failed to delete all images."
+        ${sudo_cmd} docker images -q | sort -u | xargs -r ${sudo_cmd} docker rmi -f || Show 1 "Failed to delete all images."
     elif [[ ${REMOVE_IMAGES} == "unuse" && "$(${sudo_cmd} docker images -q)" != "" ]]; then
         Show 2 "Start deleting unuse images."
         ${sudo_cmd} docker image prune -af || Show 1 "Failed to delete unuse images."
@@ -165,11 +170,46 @@ Teardown_Agent_Container() {
 
 Uninstall_NimoOS() {
 
-    for SERVICE in "${NIMO_SERVICES[@]}"; do
+    # NIMO_SERVICES is a hand-kept list and it has fallen behind: ai, wiki,
+    # search, photos, parser, openvino, local-storage-first and wiki-summary
+    # were all left running by it. Discover the rest instead of adding seven
+    # more names that the next new service will again be missing from.
+    # nimoos.service stays last, for the reason noted on the list.
+    local discovered
+    discovered="$(systemctl list-unit-files 'nimoos-*' --no-legend 2>/dev/null | awk '{print $1}')"
+    local -a all_services=()
+    local s
+    for s in ${discovered}; do
+        [[ " ${NIMO_SERVICES[*]} " == *" ${s} "* ]] || all_services+=("${s}")
+    done
+    all_services+=("${NIMO_SERVICES[@]}")
+
+    for SERVICE in "${all_services[@]}"; do
         Show 2 "Stopping ${SERVICE}..."
         systemctl stop "${SERVICE}" || Show 3 "Service ${SERVICE} does not exist."
         systemctl disable "${SERVICE}" || Show 3 "Service ${SERVICE} does not exist."
     done
+
+    # The manifest lists every file the installer laid down — 711 of them on a
+    # full install, including all the binaries in /usr/bin and every systemd
+    # unit. It lives inside NIMO_PATH, and the block that reads it used to run
+    # *after* the rm -rf below, so by then it was gone and its `if [[ -f ]]`
+    # guard silently skipped everything. Every uninstall left the whole install
+    # on disk. Copy it out first, then use the copy.
+    local manifest_copy=""
+    if [[ -f ${MANIFEST} ]]; then
+        manifest_copy="$(mktemp)"
+        ${sudo_cmd} cat "${MANIFEST}" > "${manifest_copy}"
+    fi
+
+    # The agent's audit log is append-only (chattr +a) on purpose, so that a
+    # compromised agent cannot rewrite its own trail. Nothing can unlink it
+    # while that attribute is set, not even root, and the rm -rf below fails
+    # with "Operation not permitted" — taking the whole directory removal with
+    # it. Uninstalling is the one time the attribute has to come off.
+    if [[ -d ${NIMO_PATH} ]] && command -v chattr >/dev/null 2>&1; then
+        ${sudo_cmd} find "${NIMO_PATH}" -type f -exec chattr -a -i {} + 2>/dev/null
+    fi
 
     # Remove Service file
     if [[ -f ${NIMO_SERVICE_USR} ]]; then
@@ -207,12 +247,15 @@ Uninstall_NimoOS() {
         ${sudo_cmd} rm -rf ${NIMO_CONF_PATH_OLD}
     fi
 
-    if [[ -f ${MANIFEST} ]]; then
-        ${sudo_cmd} cat ${MANIFEST} | while read -r line; do
+    if [[ -n ${manifest_copy} ]]; then
+        while read -r line; do
             if [[ -f ${line} ]]; then
                 ${sudo_cmd} rm -rf "${line}"
             fi
-        done
+        done < "${manifest_copy}"
+        rm -f "${manifest_copy}"
+        # Unit files were among them; forget the ones that just vanished.
+        ${sudo_cmd} systemctl daemon-reload 2>/dev/null || true
     fi
 
     if [[ -d ${NIMO_USER_FILES} ]]; then
