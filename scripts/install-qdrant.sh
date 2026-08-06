@@ -20,11 +20,18 @@
 #     be verified before `docker rm`
 #   - Starts the service and checks ports 6333 / 6334
 #
+# On hosts whose GLIBC is too old for the native binary (Debian 12 ships 2.36,
+# qdrant v1.10+ needs 2.38) it falls back to running the same qdrant version in
+# docker, wrapped in the same qdrant.service unit — so the parser dependency and
+# the data directory work identically either way.
+#
 # Usage:
-#   sudo bash install-qdrant.sh [--version v1.18.1] [--tarball <path>] [--remove-docker]
+#   sudo bash install-qdrant.sh [--version v1.18.1] [--tarball <path>] [--docker] [--remove-docker]
 #
 #   --version        install a different version
 #   --tarball PATH   use a locally downloaded qdrant-*.tar.gz instead of fetching
+#   --docker         skip the native path and use the docker engine even when
+#                    the host GLIBC could run the native binary
 #   --remove-docker  `docker rm` the old container once native qdrant is verified
 #
 # Data compatibility: same version plus same storage_path means the native
@@ -37,10 +44,12 @@ set -e
 QDRANT_VERSION="v1.18.1"
 LOCAL_TARBALL=""
 REMOVE_DOCKER=0
+FORCE_DOCKER=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) QDRANT_VERSION="$2"; shift 2 ;;
         --tarball) LOCAL_TARBALL="$2"; shift 2 ;;
+        --docker) FORCE_DOCKER=1; shift ;;
         --remove-docker) REMOVE_DOCKER=1; shift ;;
         -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
@@ -94,20 +103,84 @@ detect_arch() {
 
 check_glibc() {
     # The -gnu builds of qdrant v1.10+ need GLIBC 2.38 or newer, and Debian 12
-    # ships 2.36. Bail out early rather than install something that cannot run;
-    # staying on docker is the right answer on those systems.
+    # ships 2.36. On those systems the native binary cannot run at all, so the
+    # decision is recorded here and main() takes the docker path instead of
+    # installing something that dies on startup. This used to be a hard failure
+    # telling the user to "stay on docker" — useless on a fresh machine where
+    # there is no docker qdrant to stay on, and it meant a supported distribution
+    # had no working route to a running qdrant through this script.
+    NATIVE_OK=1
     local need="2.38"
     local have
     have="$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
     if [[ -z "$have" ]]; then
-        log_warn "cannot determine the GLIBC version, continuing anyway (may fail)"
+        log_warn "cannot determine the GLIBC version, assuming the native binary works (may fail)"
         return
     fi
     # true when have >= need
     if [[ "$(printf '%s\n%s' "$need" "$have" | sort -V | head -1)" != "$need" ]]; then
-        log_fail "host GLIBC $have < $need, so the qdrant binary cannot run here. This script only converts an existing docker deployment to a native one, so there is nothing for it to do on this distribution — Debian 12 included, which ships 2.36. Run qdrant in docker instead, reachable on 127.0.0.1:6333, which is where parser, search and wiki look for it."
+        log_warn "host GLIBC $have < $need: the native qdrant binary cannot run here (Debian 12 ships 2.36)"
+        NATIVE_OK=0
+        return
     fi
     log_ok "GLIBC $have >= $need"
+}
+
+# Docker fallback: same qdrant version, same data directory, same loopback-only
+# exposure — but the engine runs in a container, wrapped in the same
+# qdrant.service unit name the native path installs. That unit name is the whole
+# point of this script (parser declares After=qdrant.service), so the fallback
+# must provide it too, not a bare `docker run` that evaporates on reboot.
+install_docker_qdrant() {
+    command -v docker >/dev/null 2>&1 \
+        || log_fail "host GLIBC is too old for the native qdrant binary and docker is not installed, so there is no way to run qdrant on this machine. Install docker (the NimoOS core installer does) and rerun."
+
+    local image="qdrant/qdrant:${QDRANT_VERSION}"
+    local docker_bin; docker_bin="$(command -v docker)"
+
+    log_info "=== docker fallback: ${image} wrapped in ${SERVICE_FILE} ==="
+
+    # Pull at install time so startup never blocks on the registry. On networks
+    # that cannot reach docker.io, configure registry-mirrors in
+    # /etc/docker/daemon.json first — the error below is the pull failing.
+    if ! ${sudo_cmd} docker image inspect "${image}" >/dev/null 2>&1; then
+        log_info "pulling ${image} (one-time) ..."
+        ${sudo_cmd} docker pull "${image}" \
+            || log_fail "could not pull ${image}. If this machine cannot reach docker.io, add a registry mirror to /etc/docker/daemon.json and rerun."
+    fi
+    log_ok "image present: ${image}"
+
+    log_info "writing the systemd unit to $UNIT_DST"
+    ${sudo_cmd} tee "$UNIT_DST" >/dev/null <<EOF
+[Unit]
+Description=Qdrant vector database (docker)
+Documentation=https://qdrant.tech/documentation/
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+# A leftover container from an unclean stop would make docker run fail on the
+# duplicate name; remove it first ("-" ignores the error when there is none).
+ExecStartPre=-${docker_bin} rm -f qdrant
+# --pull=never: the image was pulled above; startup must not depend on the
+# registry being reachable.
+ExecStart=${docker_bin} run --rm --name qdrant --pull=never \\
+    -p 127.0.0.1:6333:6333 -p 127.0.0.1:6334:6334 \\
+    -v ${STORAGE_DIR}:/qdrant/storage \\
+    -v ${SNAPSHOT_DIR}:/qdrant/snapshots \\
+    -e QDRANT__TELEMETRY_DISABLED=true \\
+    ${image}
+ExecStop=${docker_bin} stop qdrant
+Restart=on-failure
+RestartSec=5s
+SyslogIdentifier=qdrant
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    ${sudo_cmd} systemctl daemon-reload
+    ${sudo_cmd} systemctl enable --force --no-ask-password "$SERVICE_FILE"
 }
 
 stop_docker_qdrant() {
@@ -292,21 +365,32 @@ log_info "data:    $STORAGE_DIR (reusing the docker data directory)"
 
 detect_arch
 check_glibc
-verify_storage
-download_binary
-write_config
-stop_docker_qdrant
-write_unit
-start_and_verify
-restart_dependents
-maybe_remove_docker
+
+if [[ "${NATIVE_OK}" -eq 1 && "${FORCE_DOCKER}" -eq 0 ]]; then
+    verify_storage
+    download_binary
+    write_config
+    stop_docker_qdrant
+    write_unit
+    start_and_verify
+    restart_dependents
+    maybe_remove_docker
+    MODE_NOTE="binary:      $BIN_DST
+  config:      $CONF_FILE"
+else
+    # Native binary cannot run (or --docker was passed): same service name, same
+    # data directory, same 127.0.0.1-only exposure, engine in a container.
+    verify_storage
+    install_docker_qdrant
+    start_and_verify
+    restart_dependents
+    MODE_NOTE="engine:      docker (qdrant/qdrant:${QDRANT_VERSION}, wrapped in ${SERVICE_FILE})"
+fi
 
 echo ""
-log_ok "Migration complete."
+log_ok "Qdrant install complete."
 echo ""
-echo "  binary:      $BIN_DST"
-echo "  config:      $CONF_FILE"
+echo "  ${MODE_NOTE}"
 echo "  data:        $STORAGE_DIR"
 echo "  logs:        journalctl -u $SERVICE_FILE -f"
 echo "  collections: curl http://127.0.0.1:6333/collections"
-echo "  rollback:    sudo systemctl disable --now qdrant && sudo docker start qdrant"
