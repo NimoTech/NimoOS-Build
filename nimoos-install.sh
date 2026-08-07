@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 #
-#           NimoOS Installer Script v0.4.17#
+#           NimoOS Installer Script v0.4.18#
 #   GitHub: https://github.com/NimoTech/NimoOS
 #   Issues: https://github.com/NimoTech/NimoOS/issues
 #   Requires: bash, mv, rm, tr, grep, sed, curl/wget, tar, smartmontools, parted, ntfs-3g, net-tools
@@ -75,7 +75,7 @@ UNAME_U="$(uname -s)"
 readonly UNAME_U
 
 readonly NIMO_CONF_PATH=/etc/nimoos/gateway.ini
-readonly NIMO_UNINSTALL_URL="https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-uninstall-v0.4.17.sh"
+readonly NIMO_UNINSTALL_URL="https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-uninstall-v0.4.18.sh"
 readonly NIMO_UNINSTALL_PATH=/usr/bin/nimoos-uninstall
 
 # REQUIREMENTS CONF PATH
