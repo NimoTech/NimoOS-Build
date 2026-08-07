@@ -258,6 +258,19 @@ Uninstall_NimoOS() {
         ${sudo_cmd} systemctl daemon-reload 2>/dev/null || true
     fi
 
+    # The manifest only covers what the core installer wrote. Units installed by
+    # the stack installers — nimoos-parser.service is the one that shows up —
+    # are not in it, so their files outlive the uninstall even though the loop
+    # above stopped and disabled them. Everything matching nimoos-* is ours.
+    ${sudo_cmd} rm -f /usr/lib/systemd/system/nimoos-* \
+                      /lib/systemd/system/nimoos-* \
+                      /etc/systemd/system/nimoos-* 2>/dev/null
+    ${sudo_cmd} systemctl daemon-reload 2>/dev/null || true
+    # Stopping a service and then deleting its unit file leaves systemd holding
+    # a failed not-found entry for it, so `systemctl --failed` still listed
+    # nimoos-user-service and rclone after a clean uninstall. Clear them.
+    ${sudo_cmd} systemctl reset-failed 2>/dev/null || true
+
     if [[ -d ${NIMO_USER_FILES} ]]; then
         ${sudo_cmd} rm -rf ${NIMO_USER_FILES}/[0-9]*
         ${sudo_cmd} rm -rf ${NIMO_USER_FILES}/db
@@ -391,5 +404,20 @@ Teardown_Agent_Container
 Uninstall_NimoOS
 
 Show 0 "NimoOS uninstall completely."
+
+# The AI and RAG stack installs separately (see the README) and is not removed
+# here — saying nothing about it made "uninstall completely" read as a claim
+# that covers it. Only mention what is actually still on this machine.
+stack_left=()
+[ -d /opt/nimoos-parser ]     && stack_left+=("/opt/nimoos-parser")
+[ -d /opt/qdrant ]            && stack_left+=("/opt/qdrant")
+[ -d /opt/ovms ]              && stack_left+=("/opt/ovms")
+[ -x /usr/local/bin/ollama ]  && stack_left+=("/usr/local/bin/ollama (+ /usr/share/ollama)")
+if ((${#stack_left[@]})); then
+    Show 3 "The AI/RAG stack was installed separately and is left in place:"
+    for p in "${stack_left[@]}"; do echo "           ${p}"; done
+    echo "         Its services (qdrant, ollama) are also still enabled."
+    echo "         Remove them by hand if you want the machine clean."
+fi
 
 
