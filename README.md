@@ -23,8 +23,12 @@ Build and install scripts for NimoOS, plus the single version source
 
 ## Install
 
+Supported today: **linux/amd64 only**. The installer refuses other
+architectures rather than installing binaries that cannot run — arm64 and armv7
+are not published yet.
+
 ```bash
-curl -fsSL <download-domain>/get/nimoos-install.sh | sudo bash
+curl -fsSL https://get.nimotech.ai/get/nimoos-install.sh | sudo bash
 ```
 
 The AI and RAG stack (Qdrant, Parser, Ollama) is a separate step:
