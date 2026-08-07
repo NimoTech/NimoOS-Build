@@ -17,7 +17,7 @@
 #   configuration for a newer version and restarts.
 #
 #   Usage:
-#     curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-update.sh | sudo bash
+#     curl -fsSL https://get.nimotech.ai/get/nimoos-update.sh | sudo bash
 #       core only, skip the heavy stack:
 #     curl -fsSL .../get/nimoos-update.sh | sudo NIMO_SKIP_STACK=1 bash
 #       pick a version / stack only:
@@ -45,7 +45,7 @@ readonly UNAME_U
 
 TARGET_ARCH=""
 TMP_ROOT=/tmp/nimoos-updater
-NIMO_DOWNLOAD_DOMAIN="https://nimoos-public.s3.us-east-2.amazonaws.com/"
+NIMO_DOWNLOAD_DOMAIN="https://get.nimotech.ai/"
 
 # Version, overridable via --version or the environment. AppStore has its own line.
 NIMO_UPDATE_VERSION="${NIMO_UPDATE_VERSION:-v1.9.4-alpha1}"

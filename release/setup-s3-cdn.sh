@@ -130,7 +130,19 @@ fi
 # 1) Bucket — created private, with public access blocked at the bucket level
 # ---------------------------------------------------------------------------
 info "step 1/5: bucket ${S3_BUCKET}"
-if aws s3api head-bucket --bucket "${S3_BUCKET}" >/dev/null 2>&1; then
+# head-bucket answers 403, not 404, for a bucket the caller may not inspect.
+# The upload identity (nimoos-uploader) holds s3:ListBucket only under a prefix
+# condition, so it gets 403 here and the else-branch below would read that as
+# "no bucket" and try to create one that already exists. Tell the two apart
+# before acting on the answer: this script provisions infrastructure and needs
+# an administrative identity, not the publishing one.
+head_out="$(aws s3api head-bucket --bucket "${S3_BUCKET}" 2>&1)"; head_rc=$?
+if [ "${head_rc}" -ne 0 ] && printf '%s' "${head_out}" | grep -q '(403)'; then
+    die "cannot inspect ${S3_BUCKET}: 403 Forbidden.
+       These credentials can publish but not administer. Re-run with an
+       administrative profile, e.g. AWS_PROFILE=nimoos-admin $0"
+fi
+if [ "${head_rc}" -eq 0 ]; then
     ok "bucket already exists"
 else
     # us-east-1 rejects LocationConstraint; every other region requires it.
@@ -215,6 +227,36 @@ fi
 # 3) Distribution — two cache behaviours, split by object lifetime
 # ---------------------------------------------------------------------------
 info "step 3/5: cloudfront distribution"
+
+# Custom domain, attached at creation rather than bolted on afterwards. Without
+# it the distribution only answers on its <id>.cloudfront.net name, and a
+# distribution whose alias was added by hand drifts from this script — which is
+# supposed to be the description of reality.
+#
+# CDN_CERT_ARN must be an ACM certificate in us-east-1 no matter where the
+# bucket lives: CloudFront is a global service and reads certificates only from
+# that region. A cert in the bucket's region is invisible to it.
+#
+# Both values are optional. Leave them unset and you get a working distribution
+# on its cloudfront.net name, which is a reasonable first step.
+ALIAS_JSON=""
+if [ -n "${CDN_DOMAIN:-}" ]; then
+    [ -n "${CDN_CERT_ARN:-}" ] || die "CDN_DOMAIN is set but CDN_CERT_ARN is not (needs an ACM cert in us-east-1)"
+    case "${CDN_CERT_ARN}" in
+        arn:aws:acm:us-east-1:*) ;;
+        *) die "CDN_CERT_ARN must be in us-east-1; CloudFront cannot read certificates from any other region:
+       ${CDN_CERT_ARN}" ;;
+    esac
+    ALIAS_JSON=",
+  \"Aliases\": { \"Quantity\": 1, \"Items\": [\"${CDN_DOMAIN}\"] },
+  \"ViewerCertificate\": {
+    \"ACMCertificateArn\": \"${CDN_CERT_ARN}\",
+    \"SSLSupportMethod\": \"sni-only\",
+    \"MinimumProtocolVersion\": \"TLSv1.2_2021\"
+  }"
+    info "custom domain: ${CDN_DOMAIN}"
+fi
+
 DIST_ID=""
 if [ "${DRY_RUN}" -eq 0 ]; then
     DIST_ID="$(aws cloudfront list-distributions \
@@ -262,7 +304,7 @@ else
       "Compress": true,
       "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6"
     }]
-  }
+  }${ALIAS_JSON}
 }
 JSON
     if [ "${DRY_RUN}" -eq 1 ]; then

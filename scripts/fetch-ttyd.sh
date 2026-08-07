@@ -13,7 +13,7 @@ declare -A ASSET=(
 name="${ASSET[$ARCH]:?unknown arch $ARCH}"
 # Prefer the NimoOS mirror, fall back to GitHub. NIMO_TTYD_BASE overrides the
 # mirror; NIMO_OSS_BASE is the former name and is still honoured.
-MIRROR_BASE="${NIMO_TTYD_BASE:-${NIMO_OSS_BASE:-https://nimoos-public.s3.us-east-2.amazonaws.com/ttyd}}"
+MIRROR_BASE="${NIMO_TTYD_BASE:-${NIMO_OSS_BASE:-https://get.nimotech.ai/ttyd}}"
 MIRROR_URL="${MIRROR_BASE}/${TTYD_VERSION}/${name}"
 GH_URL="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${name}"
 mkdir -p "$(dirname "$DEST")"
