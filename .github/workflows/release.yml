@@ -91,19 +91,22 @@ jobs:
       # Which repositories to clone comes from component_registry, so adding a
       # component there needs no change here.
       #
-      # NimoOS-Common and NimoOS-MessageBus are not components but every service
-      # needs them on disk: go.mod redirects NimoOS-Common to ../NimoOS-Common,
-      # and several go:generate directives read ../NimoOS-MessageBus's spec.
+      # Only components are cloned. NimoOS-Common and NimoOS-MessageBus used to
+      # be seeded in unconditionally, because every service's go.mod redirected
+      # NimoOS-Common to ../NimoOS-Common and several go:generate directives
+      # read ../NimoOS-MessageBus's spec. Services depend on a published
+      # NimoOS-Common and commit their generated code now, so neither needs to
+      # be on disk — and a partial `components:` run no longer drags them in.
       - name: Check out the component repositories
         env:
-          GH_TOKEN: ${{ secrets.CI_SIBLING_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           COMPONENTS: ${{ inputs.components || 'all' }}
         run: |
           set -euo pipefail
           # shellcheck source=/dev/null
           . NimoOS-Build/release/lib/common.sh
 
-          repos="NimoOS-Common NimoOS-MessageBus"
+          repos=""
           while IFS='|' read -r key dir _proj type _am _bin _tok _vv _mig; do
             [ "$type" = go ] || continue
             if [ "$COMPONENTS" != all ]; then
@@ -114,22 +117,17 @@ jobs:
           $(component_registry)
           EOF
 
-          # Not `gh repo clone`: gh resolves the repository over GraphQL first,
-          # and a fine-grained token gets
-          #   GraphQL: Could not resolve to a Repository with the name '...'
-          # even with Contents: Read granted on it, because GraphQL support for
-          # those tokens is limited. REST and git-over-HTTPS both see it fine.
+          # Every component repository is public, so the job token is enough.
+          # It goes in as an http.extraheader — the same mechanism
+          # actions/checkout uses — through a config file rather than `git -c`,
+          # so it never appears in any process's argv.
           #
-          # Auth goes in as an http.extraheader — the same mechanism
-          # actions/checkout uses — and through a config file rather than
-          # `git -c`, so the token never appears in any process's argv.
-          #
-          # If this ever fails with "remote: Repository not found", check whether
-          # CI_SIBLING_TOKEN is actually set on this repository before suspecting
-          # the mechanism. GitHub answers 404 rather than 403 for a private
-          # repository the caller cannot see, so a missing secret — the workflow
-          # then falls back to the job token, which can only see this repo —
-          # looks exactly like a nonexistent repository. It cost two dry runs.
+          # Kept rather than cloning anonymously only for the rate limit. If a
+          # clone ever fails with "remote: Repository not found", suspect the
+          # repository being private again before suspecting this mechanism:
+          # GitHub answers 404 rather than 403 for a repository the caller
+          # cannot see, so an access problem looks exactly like a nonexistent
+          # repository. That cost two dry runs when these repos were private.
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git config --global --unset-all http.https://github.com/.extraheader || true
           git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
@@ -183,11 +181,11 @@ jobs:
             cp -a "$dir/build" "$staging/build"
             mkdir -p "$staging/build/sysroot/usr/bin"
 
-            # codegen/ is gitignored in several repositories, so this is not
-            # optional. Failures are surfaced rather than swallowed: release.sh
-            # tolerates them because a developer tree usually already has the
-            # generated code, which is never true on a runner.
-            ( cd "$dir" && go generate ./... )
+            # No go generate step: every component commits its generated code
+            # now, so a fresh clone compiles as-is. Regenerating here would also
+            # rebuild the message-bus clients against whatever is on
+            # NimoOS-MessageBus's main, which is not necessarily what the
+            # component was tested against.
 
             # token minus the "nimoos-" prefix is the GO_VERSION_SYM key; core's
             # token is a bare "nimoos". A component with no entry (cli) gets no
