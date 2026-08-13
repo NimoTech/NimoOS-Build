@@ -274,6 +274,86 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # dist/ here holds exactly this run's artifacts (a fresh download), so a
+      # plain glob is safe — unlike release.sh's persistent dist/ directory,
+      # which has to track its manifest explicitly.
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum $(ls *.tar.gz | sort) > SHA256SUMS
+          cat SHA256SUMS
+
+      # The changes live in the service repositories, not here — this
+      # repository's own log between two releases is just version bumps. So the
+      # notes aggregate each component repo's commit subjects between its
+      # previous release tag and this one (tag-release.sh tags every service
+      # repo at release time). Strictly best-effort: a repo that fails to
+      # answer degrades to a placeholder line, never a failed release.
+      - name: Compose release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          . release/versions.conf
+
+          tag="$GITHUB_REF_NAME"
+          case "$tag" in
+            v*) ;;
+            *) tag="v${NIMOOS_VERSION}" ;;   # dispatch run: name it from versions.conf
+          esac
+
+          cat > /tmp/notes.md <<'NOTES'
+          Component tarballs for this release, built by CI. `SHA256SUMS` covers
+          every archive here — verify a download with `sha256sum -c SHA256SUMS`.
+
+          Each archive unpacks to a `build/` tree with the service binary at
+          `build/sysroot/usr/bin/`, which is the layout the installer expects —
+          these are interchangeable with the artifacts served from S3.
+
+          You do not need to download them by hand to install NimoOS; see the
+          README for the one-line installer.
+
+          ## Changes by component
+          NOTES
+          sed -i 's/^          //' /tmp/notes.md
+
+          . release/lib/common.sh
+          seen=" "
+          while IFS='|' read -r _key dir _proj type _rest; do
+            case "$type" in go|python) ;; *) continue ;; esac
+            case "$seen" in *" $dir "*) continue ;; esac
+            seen="$seen$dir "
+
+            tags=$(gh api "repos/NimoTech/$dir/tags" --paginate --jq '.[].name' 2>/dev/null \
+                     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | sort -V) || tags=''
+            if ! printf '%s\n' "$tags" | grep -qx "$tag"; then
+              printf '\n### %s\n- _not tagged %s (release predates per-repo tagging, or the tag query failed)_\n' \
+                "$dir" "$tag" >> /tmp/notes.md
+              continue
+            fi
+            prev=$(printf '%s\n' "$tags" | grep -x -B1 "$tag" | head -1)
+            if [ -z "$prev" ] || [ "$prev" = "$tag" ]; then
+              printf '\n### %s\n- _first tagged release of this repository_\n' "$dir" >> /tmp/notes.md
+              continue
+            fi
+
+            subjects=$(gh api "repos/NimoTech/$dir/compare/$prev...$tag" --paginate \
+                         --jq '.commits[].commit.message | split("\n")[0]' 2>/dev/null) || subjects=''
+            n=$(printf '%s\n' "$subjects" | grep -c . || true)
+            printf '\n### %s (%s → %s)\n' "$dir" "$prev" "$tag" >> /tmp/notes.md
+            if [ "${n:-0}" -eq 0 ]; then
+              echo '- no changes' >> /tmp/notes.md
+            else
+              printf '%s\n' "$subjects" | grep . | head -30 | sed 's/^/- /' >> /tmp/notes.md
+              [ "$n" -gt 30 ] && echo "- …and $((n - 30)) more" >> /tmp/notes.md || true
+            fi
+          done <<EOF
+          $(component_registry)
+          EOF
+
+          echo "--- notes ---"; cat /tmp/notes.md
+
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -292,26 +372,15 @@ jobs:
           echo "publishing $count artifact(s) as $tag"
           ls -la dist
 
-          cat > /tmp/notes.md <<'NOTES'
-          Component tarballs for this release, built by CI.
-
-          Each archive unpacks to a `build/` tree with the service binary at
-          `build/sysroot/usr/bin/`, which is the layout the installer expects —
-          these are interchangeable with the artifacts served from S3.
-
-          You do not need to download them by hand to install NimoOS; see the
-          README for the one-line installer.
-          NOTES
-          sed -i 's/^          //' /tmp/notes.md
-
           pre=''
           case "$NIMOOS_VERSION" in *-alpha*|*-beta*|*-rc*) pre='--prerelease' ;; esac
 
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/*.tar.gz --clobber
+            gh release upload "$tag" dist/*.tar.gz dist/SHA256SUMS --clobber
+            gh release edit "$tag" --notes-file /tmp/notes.md
           else
             # shellcheck disable=SC2086
-            gh release create "$tag" dist/*.tar.gz \
+            gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS \
               --title "NimoOS $tag" \
               --notes-file /tmp/notes.md \
               $pre
