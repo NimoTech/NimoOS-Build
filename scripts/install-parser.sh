@@ -70,8 +70,11 @@ UV_BIN=""
 # least as new as the build machine's (2.36).
 #   NIMO_PARSER_BUILD=1   force a pip install from source, ignoring the prebuilt venv
 #   NIMO_PARSER_MODELS=0  skip the model download; parser fetches from HF on first run
+#   NIMO_PARSER_VLM=0     skip the caption (Qwen3-VL) model download
 readonly DEP_VENV="parser/parser-venv-${VERSION}-cp311-linux-x86_64.tar.zst"
 readonly DEP_HFCACHE="parser/hf-cache.tar.zst"
+readonly DEP_VLM="parser/qwen3-vl-4b-gguf.tar.zst"
+readonly VLM_MODELS_DIR="${INSTALL_DIR}/models"
 
 readonly CONF_PATH="/etc/nimoos"
 readonly CONF_FILE="${CONF_PATH}/${APP_NAME_SHORT}.conf"
@@ -334,6 +337,35 @@ fetch_models() {
     rm -f "${tmp}"
 }
 
+# Download and unpack the Qwen3-VL caption weights (photo captions). Only the
+# GGUF form is shipped: it is pure data that llama.cpp can serve on any
+# hardware, CPU included — parser's backendselect picks candidates by which
+# weight form is actually on disk. The OpenVINO IR form is an on-machine
+# conversion for Intel GPUs (NimoOS-Parser scripts/vlm/README.md), never a
+# download. Non-fatal by design: without the weights the parser runs fine,
+# photo captions just stay off.
+fetch_vlm_model() {
+    if [[ "${NIMO_PARSER_VLM:-1}" == "0" ]]; then
+        log_info "NIMO_PARSER_VLM=0: skipping the caption model download."; return
+    fi
+    if [[ -f "${VLM_MODELS_DIR}/qwen3-vl-4b-gguf/model.gguf" \
+       && -f "${VLM_MODELS_DIR}/qwen3-vl-4b-gguf/mmproj.gguf" ]]; then
+        log_ok "caption model already in place, skipping the download."; return
+    fi
+    ensure_zstd || { log_warn "zstd is unavailable, skipping the caption model"; return; }
+    local url="${NIMO_DEPS_BASE}/${DEP_VLM}"
+    local tmp; tmp="$(mktemp)"
+    log_info "downloading the Qwen3-VL caption model (~3G): ${url} ..."
+    if ${sudo_cmd} mkdir -p "${VLM_MODELS_DIR}" \
+        && curl -fSL --retry 3 --connect-timeout 10 -o "${tmp}" "${url}" \
+        && ${sudo_cmd} tar --zstd -xf "${tmp}" -C "${VLM_MODELS_DIR}"; then
+        log_ok "caption model in place."
+    else
+        log_warn "could not fetch the caption model; photo captions stay off until ${VLM_MODELS_DIR}/qwen3-vl-4b-gguf/ is provisioned."
+    fi
+    rm -f "${tmp}"
+}
+
 setup_venv() {
     if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
         log_info "creating the venv at ${VENV_DIR} (interpreter: ${PARSER_PY}) ..."
@@ -424,6 +456,7 @@ install_dirs
 install_source
 setup_venv
 fetch_models
+fetch_vlm_model
 install_conf
 install_unit
 maybe_start
