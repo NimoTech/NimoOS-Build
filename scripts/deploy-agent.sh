@@ -25,7 +25,7 @@ AGENT_DIR_IN_CONTAINER="/usr/share/nimoos/agent"
 #               `from netns import client` (missed 2026-06-24)
 #   mcp_server  the MCP server adapter, imported by main.py (missed 2026-06-30)
 #   shell_guard L1 command gating, imported by skills/shell.py (missed 2026-07-15)
-PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes)
+PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes toolbox)
 
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 
