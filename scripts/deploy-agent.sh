@@ -25,7 +25,12 @@ AGENT_DIR_IN_CONTAINER="/usr/share/nimoos/agent"
 #               `from netns import client` (missed 2026-06-24)
 #   mcp_server  the MCP server adapter, imported by main.py (missed 2026-06-30)
 #   shell_guard L1 command gating, imported by skills/shell.py (missed 2026-07-15)
-PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes toolbox lark)
+# `tasks` fails differently and more quietly: main.py imports it lazily inside
+# the startup hooks and the endpoint handlers, and those hooks swallow the
+# ImportError, so leaving it out yields a HEALTHY container with no scheduler
+# and 500s on /agent/tasks. Verify a deploy by reading the startup log and
+# calling GET /agent/tasks, not by seeing the container Up.
+PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes toolbox lark tasks)
 
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 
