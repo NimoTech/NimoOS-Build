@@ -90,6 +90,14 @@ BINARY="${SERVICE_BINARY[$SERVICE]}"
 SYSTEMD="${SERVICE_SYSTEMD[$SERVICE]}"
 CGO="${SERVICE_CGO[$SERVICE]}"
 
+# Provenance guard — see lib/deploy-stamp.sh. /usr/bin/<binary> is a global
+# singleton, and for the `ai` service the Go binary and the agent container must
+# come from the same lineage (a binary gating a route the container does not
+# serve is how the worst outage so far happened).
+source "$REPO_ROOT/NimoOS-Build/scripts/lib/deploy-stamp.sh"
+stamp_verify "$SERVICE" "$DIR" "$SERVICE binary" || exit 1
+[[ "$SERVICE" == "ai" ]] && { stamp_verify agent "$DIR" "agent code" || exit 1; }
+
 echo "==> [1/3] building $SERVICE ..."
 cd "$DIR"
 FULL_VERSION="$(resolve_full_version)"   # reads the local git sha from inside $DIR
@@ -105,6 +113,8 @@ sudo cp "./$BINARY" "/usr/bin/$BINARY"
 echo "==> [3/3] starting $SYSTEMD ..."
 sudo systemctl enable "$SYSTEMD" 2>/dev/null || true   # a freshly added service is not enabled by default
 sudo systemctl start "$SYSTEMD"
+
+stamp_write "$SERVICE" "$DIR"
 
 echo ""
 echo "Done. $SERVICE restarted. Status:"
