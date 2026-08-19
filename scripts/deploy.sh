@@ -95,8 +95,15 @@ CGO="${SERVICE_CGO[$SERVICE]}"
 # come from the same lineage (a binary gating a route the container does not
 # serve is how the worst outage so far happened).
 source "$REPO_ROOT/NimoOS-Build/scripts/lib/deploy-stamp.sh"
-stamp_verify "$SERVICE" "$DIR" "$SERVICE binary" || exit 1
-[[ "$SERVICE" == "ai" ]] && { stamp_verify agent "$DIR" "agent code" || exit 1; }
+stamp_verify "$SERVICE" "$DIR" "$SERVICE binary" "/usr/bin/$BINARY" || exit 1
+if [[ "$SERVICE" == "ai" ]]; then
+  # Cross-layer: hash the agent's main.py through docker. An unreachable
+  # container yields an empty hash, which stamp_verify treats as "unknown" —
+  # never as a match, and never as a mismatch.
+  _agent_sha="$(sudo docker exec nimoos-agent-agent-1 \
+      sha256sum /usr/share/nimoos/agent/main.py 2>/dev/null | cut -d' ' -f1)"
+  stamp_verify agent "$DIR" "agent code" "hash:${_agent_sha}" || exit 1
+fi
 
 echo "==> [1/3] building $SERVICE ..."
 cd "$DIR"
@@ -114,7 +121,7 @@ echo "==> [3/3] starting $SYSTEMD ..."
 sudo systemctl enable "$SYSTEMD" 2>/dev/null || true   # a freshly added service is not enabled by default
 sudo systemctl start "$SYSTEMD"
 
-stamp_write "$SERVICE" "$DIR"
+stamp_write "$SERVICE" "$DIR" "/usr/bin/$BINARY"
 
 echo ""
 echo "Done. $SERVICE restarted. Status:"
