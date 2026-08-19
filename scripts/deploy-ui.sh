@@ -16,6 +16,12 @@ export NIMOOS_VERSION
 _full="$(cd "$UI_DIR" && resolve_full_version)"
 export NIMOOS_BUILD="${_full#${NIMOOS_VERSION}+}"
 
+# Provenance guard — see lib/deploy-stamp.sh. /var/lib/nimoos/www is a global
+# singleton too: the same incident that replaced the agent's routes also
+# replaced the UI build, taking another tree's settings pages with it.
+source "$REPO_ROOT/NimoOS-Build/scripts/lib/deploy-stamp.sh"
+stamp_verify ui "$UI_DIR" "frontend build" || exit 1
+
 echo "==> [1/3] syncing dependencies (pnpm install --frozen-lockfile) ..."
 cd "$UI_DIR"
 pnpm install --frozen-lockfile
@@ -34,4 +40,5 @@ else
 fi
 
 echo ""
+stamp_write ui "$UI_DIR"
 echo "done — frontend deployed to $DEPLOY_TARGET"
