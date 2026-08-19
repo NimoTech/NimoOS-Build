@@ -85,6 +85,46 @@ echo wip >> "$A/f"
 stamp_write svc2 "$A"
 check 0 "dirty deploy from the same tree -> allowed" stamp_verify svc2 "$A" "thing"
 
+# --- the artifact anchor -----------------------------------------------------
+# Added after the git-only stamp told a reader the wrong tree was live: these
+# stamps were first seeded BY HAND from a belief, the belief was wrong for one
+# layer, and nothing in the file could contradict it. A stamp that cannot be
+# checked against reality is worse than no stamp, because it gets trusted.
+
+ART="$TMP/artifact.bin"
+echo "v1" > "$ART"
+stamp_write art "$A" "$ART"
+[[ "$(sed -n 's/^artifact_sha=//p' "$NIMO_DEPLOY_STAMP_DIR/art")" == "$(sha256sum "$ART" | cut -d' ' -f1)" ]] \
+  && ok "the artifact hash is recorded" || bad "the artifact hash is recorded"
+check 0 "artifact unchanged -> allowed" stamp_verify art "$A" "thing" "$ART"
+
+# Someone replaced the live artifact outside the deploy scripts: git says the
+# same lineage, but the record no longer describes what is installed.
+echo "v2-replaced-behind-our-back" > "$ART"
+check 1 "artifact replaced outside the scripts -> refused" stamp_verify art "$A" "thing" "$ART"
+
+# A caller that computes the hash elsewhere (inside a container) passes hash:.
+stamp_write art2 "$A" "hash:abc123"
+[[ "$(sed -n 's/^artifact_sha=//p' "$NIMO_DEPLOY_STAMP_DIR/art2")" == "abc123" ]] \
+  && ok "hash: form is stored verbatim" || bad "hash: form is stored verbatim"
+check 1 "hash: mismatch -> refused" stamp_verify art2 "$A" "thing" "hash:def456"
+check 0 "hash: match -> allowed" stamp_verify art2 "$A" "thing" "hash:abc123"
+
+# An unreachable artifact (container down, file gone) must not be read as a
+# mismatch — that would block every deploy on a stopped container.
+check 0 "artifact hash unavailable -> not treated as a mismatch" \
+  stamp_verify art2 "$A" "thing" "hash:"
+
+# A stamp with no hash at all (hand-written, or predating this field) still
+# reasons from git, but says out loud that it could not be cross-checked.
+printf 'head=%s\nbranch=x\nrepo_root=%s\ndirty=0\nat=now\n' \
+  "$(git -C "$A" rev-parse HEAD)" "$A" > "$NIMO_DEPLOY_STAMP_DIR/art3"
+if stamp_verify art3 "$A" "thing" "$ART" 2>&1 | grep -q "could not be cross-checked"; then
+  ok "an unverifiable stamp is called out, not trusted silently"
+else
+  bad "an unverifiable stamp is called out, not trusted silently"
+fi
+
 echo ""
 echo "$pass passed, $fail failed"
 [[ "$fail" == 0 ]]
