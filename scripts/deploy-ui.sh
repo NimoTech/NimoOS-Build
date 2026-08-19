@@ -33,7 +33,14 @@ echo "==> [3/3] deploying to $DEPLOY_TARGET ..."
 sudo mkdir -p "$DEPLOY_TARGET"
 
 if command -v rsync &>/dev/null; then
-  sudo rsync -a --delete "$BUILD_OUT/" "$DEPLOY_TARGET/"
+  # protect app/***: /app/ belongs to NimoOS-New-UI, which deploys there
+  # separately. This build never produces an app/ directory, so a bare --delete
+  # removed the whole of New-UI on every Vue2 deploy — silently, and with no
+  # error, so the section it carries simply stopped existing. New-UI's own
+  # script was already written for coexistence (app-scoped --delete, and a root
+  # redirect it writes only when the root has no other homepage); only this side
+  # was destructive, which made deploy ORDER an unwritten contract. Now it isn't.
+  sudo rsync -a --delete --filter='protect app/***' "$BUILD_OUT/" "$DEPLOY_TARGET/"
 else
   sudo rm -rf "$DEPLOY_TARGET"/*
   sudo cp -r "$BUILD_OUT/." "$DEPLOY_TARGET/"
