@@ -30,9 +30,28 @@ AGENT_DIR_IN_CONTAINER="/usr/share/nimoos/agent"
 # ImportError, so leaving it out yields a HEALTHY container with no scheduler
 # and 500s on /agent/tasks. Verify a deploy by reading the startup log and
 # calling GET /agent/tasks, not by seeing the container Up.
-PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes toolbox lark tasks)
+#   web         web_search/web_fetch backends; skills/__init__.py does
+#               `from skills.web import WEB_TOOLS` and that does `from web import
+#               backends`, so omitting it crash-loops the container on import
+#               (missed 2026-08-19 — found by a restore deploy that would not
+#               come up, with the previous copy still on disk masking it)
+PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes toolbox lark tasks web)
 
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
+
+# Provenance guard. The container is a global singleton and this script
+# overwrites it wholesale from the current tree, so a deploy from a tree that
+# lacks another tree's commits silently deletes working endpoints (twice now).
+# Refuses rather than warns: the usual call is `... | tail -8`, which eats any
+# warning; only a non-zero exit survives a pipe.
+source "$REPO_ROOT/NimoOS-Build/scripts/lib/deploy-stamp.sh"
+AI_REPO="$REPO_ROOT/NimoOS-AI"
+stamp_verify agent "$AI_REPO" "agent code" || exit 1
+# Cross-layer: the Go service and the Python agent are ONE deliverable from ONE
+# repo. The worst outage so far was not "the agent changed", it was the Go
+# binary gating a route the container no longer served. Check the other layer's
+# stamp against this tree too.
+stamp_verify ai "$AI_REPO" "nimoos-ai binary" || exit 1
 
 if [[ ! -d "$AGENT_SRC" ]]; then
   echo "agent source directory not found: $AGENT_SRC" >&2
@@ -91,6 +110,7 @@ echo "==> [3/3] waiting for /healthz (up to 30s) ..."
 deadline=$(( SECONDS + 30 ))
 while (( SECONDS < deadline )); do
   if curl -fsS http://127.0.0.1:8282/healthz 2>/dev/null | grep -q '"ok"'; then
+    stamp_write agent "$AI_REPO"
     echo "Done. The nimoos-agent container was updated and restarted, and /healthz is responding."
     exit 0
   fi
