@@ -46,12 +46,19 @@ SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 # warning; only a non-zero exit survives a pipe.
 source "$REPO_ROOT/NimoOS-Build/scripts/lib/deploy-stamp.sh"
 AI_REPO="$REPO_ROOT/NimoOS-AI"
-stamp_verify agent "$AI_REPO" "agent code" || exit 1
+# The agent's artifact lives inside the container, so its hash is read through
+# docker exec rather than off the host filesystem. main.py specifically: it is
+# the file whose silent replacement took the routes down, twice.
+agent_main_sha() {
+  $SUDO docker exec "$CONTAINER" sha256sum "$AGENT_DIR_IN_CONTAINER/main.py" \
+    2>/dev/null | cut -d' ' -f1
+}
+stamp_verify agent "$AI_REPO" "agent code" "hash:$(agent_main_sha)" || exit 1
 # Cross-layer: the Go service and the Python agent are ONE deliverable from ONE
 # repo. The worst outage so far was not "the agent changed", it was the Go
 # binary gating a route the container no longer served. Check the other layer's
 # stamp against this tree too.
-stamp_verify ai "$AI_REPO" "nimoos-ai binary" || exit 1
+stamp_verify ai "$AI_REPO" "nimoos-ai binary" "/usr/bin/nimoos-ai" || exit 1
 
 if [[ ! -d "$AGENT_SRC" ]]; then
   echo "agent source directory not found: $AGENT_SRC" >&2
@@ -110,7 +117,7 @@ echo "==> [3/3] waiting for /healthz (up to 30s) ..."
 deadline=$(( SECONDS + 30 ))
 while (( SECONDS < deadline )); do
   if curl -fsS http://127.0.0.1:8282/healthz 2>/dev/null | grep -q '"ok"'; then
-    stamp_write agent "$AI_REPO"
+    stamp_write agent "$AI_REPO" "hash:$(agent_main_sha)"
     echo "Done. The nimoos-agent container was updated and restarted, and /healthz is responding."
     exit 0
   fi
