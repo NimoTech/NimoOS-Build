@@ -107,6 +107,12 @@ check 1 "artifact replaced outside the scripts -> refused" stamp_verify art "$A"
 stamp_write art2 "$A" "hash:abc123"
 [[ "$(sed -n 's/^artifact_sha=//p' "$NIMO_DEPLOY_STAMP_DIR/art2")" == "abc123" ]] \
   && ok "hash: form is stored verbatim" || bad "hash: form is stored verbatim"
+# The spec keeps its `hash:` prefix in the file. Bare hex reads exactly like a
+# path field, so a reader could not tell a container hash from a host path
+# without opening the library — which defeats the point of a readable record.
+[[ "$(sed -n 's/^artifact=//p' "$NIMO_DEPLOY_STAMP_DIR/art2")" == "hash:abc123" ]] \
+  && ok "a container hash is distinguishable from a path in the file" \
+  || bad "a container hash is distinguishable from a path in the file"
 check 1 "hash: mismatch -> refused" stamp_verify art2 "$A" "thing" "hash:def456"
 check 0 "hash: match -> allowed" stamp_verify art2 "$A" "thing" "hash:abc123"
 
