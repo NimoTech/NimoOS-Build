@@ -22,6 +22,21 @@
 # `NIMO_DEPLOY_FORCE=1` is the escape hatch; it must be typed, so overwriting
 # someone else's tree stops being something you can do without noticing.
 
+# INTEGRATE WITH `merge`, NOT `rebase`.
+#
+# The check below is ancestry, so it is only as stable as commit identity. A
+# rebase or cherry-pick reproduces the same CONTENT under a new sha, and the
+# live commit then stops being an ancestor of the integrating tree — a correct
+# refusal by this file's rule, on a perfectly legitimate integration. Both
+# sessions hit it the first time they integrated.
+#
+# The escape hatch is NIMO_DEPLOY_FORCE=1, and that is the danger: if every
+# routine integration needs it, the habit becomes "type FORCE when it
+# complains", and a guard that is always overridden is worse than none, because
+# it still looks like protection. A merge commit in the history costs far less
+# than training everyone to ignore the one signal that stops a silent
+# overwrite. So: merge to integrate; keep FORCE for the cases you have actually
+# looked at.
 STAMP_DIR="${NIMO_DEPLOY_STAMP_DIR:-/var/lib/nimoos/.deploy-stamps}"
 
 # sudo only when the stamp dir actually needs it. The default lives under
