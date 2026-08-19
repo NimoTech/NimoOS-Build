@@ -38,7 +38,11 @@ _stamp_sudo() {
 # stamp_artifact_hash <spec> — sha256 of what was actually installed.
 #
 # spec is either a host path (hashed here) or `hash:<hex>` for an artifact the
-# caller had to reach some other way (inside the agent container, say).
+# caller had to reach some other way (inside the agent container, say). The spec
+# is recorded VERBATIM, `hash:` prefix included: stripped to bare hex it was
+# indistinguishable from a path, and a reader had to open this file to learn
+# which one they were looking at. Nobody should have to read the implementation
+# to read the record.
 # Prints nothing when it cannot be determined; callers treat that as "unknown",
 # never as "matches".
 stamp_artifact_hash() {
@@ -75,7 +79,7 @@ stamp_write() {
   $sudo_cmd mkdir -p "$STAMP_DIR"
   printf 'head=%s\nbranch=%s\nrepo_root=%s\ndirty=%s\nat=%s\nsource=%s\nartifact=%s\nartifact_sha=%s\n' \
     "$head" "$branch" "$repo" "$dirty" "$(date -Is)" "$source" \
-    "${artifact#hash:}" "${artifact_sha:-}" \
+    "$artifact" "${artifact_sha:-}" \
     | $sudo_cmd tee "$STAMP_DIR/$name" >/dev/null
 }
 
