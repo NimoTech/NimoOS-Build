@@ -71,9 +71,16 @@ UV_BIN=""
 #   NIMO_PARSER_BUILD=1   force a pip install from source, ignoring the prebuilt venv
 #   NIMO_PARSER_MODELS=0  skip the model download; parser fetches from HF on first run
 #   NIMO_PARSER_VLM=0     skip the caption (Qwen3-VL) model download
+#   NIMO_PARSER_OV=0/1    skip / force the OpenVINO text-model IR download
+#                         (default: auto — only when an Intel GPU is detected)
 readonly DEP_VENV="parser/parser-venv-${VERSION}-cp311-linux-x86_64.tar.zst"
 readonly DEP_HFCACHE="parser/hf-cache.tar.zst"
 readonly DEP_VLM="parser/qwen3-vl-4b-gguf.tar.zst"
+readonly DEP_TEXT_OV="parser/bge-text-ov-fp16.tar.zst"
+# sha256 of the published bge-text-ov package; bump together with the artifact.
+readonly DEP_TEXT_OV_SHA256="9e58b1e1a6f588983a0d04f754be7e426761288a245e1d957b0af8fca2631039"
+# Holds the caption (Qwen3-VL) weights and, on Intel GPU machines, the
+# OpenVINO text IRs (bge-m3-ov/, bge-reranker-v2-m3-ov/).
 readonly VLM_MODELS_DIR="${INSTALL_DIR}/models"
 
 readonly CONF_PATH="/etc/nimoos"
@@ -366,6 +373,56 @@ fetch_vlm_model() {
     rm -f "${tmp}"
 }
 
+# Intel GPU (OpenVINO-capable) present? Vendor 0x8086 on any DRM render node
+# is the cheapest reliable install-time signal; the parser re-probes at
+# runtime and falls back to torch CPU on its own either way.
+has_intel_gpu() {
+    local v
+    for v in /sys/class/drm/renderD*/device/vendor; do
+        [[ -r "${v}" ]] && grep -qi '0x8086' "${v}" && return 0
+    done
+    return 1
+}
+
+# Download and unpack the OpenVINO IR weights for the text pipeline (bge-m3
+# embedding incl. its sparse head, bge-reranker-v2-m3 reranker). Only useful
+# on Intel GPU machines; without the IR the parser's text backend stays on
+# torch CPU, so every failure here is a warning, never a stop.
+fetch_text_ov_models() {
+    if [[ "${NIMO_PARSER_OV:-auto}" == "0" ]]; then
+        log_info "NIMO_PARSER_OV=0: skipping the OpenVINO text models."; return
+    fi
+    if ! use_prebuilt; then
+        log_info "not x86_64, or building from source: skipping the OpenVINO text models."; return
+    fi
+    if [[ "${NIMO_PARSER_OV:-auto}" != "1" ]] && ! has_intel_gpu; then
+        log_info "no Intel GPU detected: skipping the OpenVINO text models (NIMO_PARSER_OV=1 forces the download)."; return
+    fi
+    if [[ -f "${VLM_MODELS_DIR}/bge-m3-ov/openvino_model.xml" \
+       && -f "${VLM_MODELS_DIR}/bge-reranker-v2-m3-ov/openvino_model.xml" ]]; then
+        log_ok "OpenVINO text models already in place, skipping the download."; return
+    fi
+    ensure_zstd || { log_warn "zstd is unavailable, skipping the OpenVINO text models"; return; }
+    local url="${NIMO_DEPS_BASE}/${DEP_TEXT_OV}"
+    local tmp; tmp="$(mktemp)"
+    log_info "downloading the OpenVINO text models (~2G): ${url} ..."
+    if ! curl -fSL --retry 3 --connect-timeout 10 -o "${tmp}" "${url}"; then
+        log_warn "could not fetch the OpenVINO text models; the parser stays on torch CPU until ${VLM_MODELS_DIR}/bge-m3-ov/ is provisioned."
+        rm -f "${tmp}"; return
+    fi
+    if ! echo "${DEP_TEXT_OV_SHA256}  ${tmp}" | sha256sum -c --status -; then
+        log_warn "OpenVINO text models checksum mismatch (stale CDN copy?); skipping — the parser stays on torch CPU."
+        rm -f "${tmp}"; return
+    fi
+    if ${sudo_cmd} mkdir -p "${VLM_MODELS_DIR}" \
+        && ${sudo_cmd} tar --zstd -xf "${tmp}" -C "${VLM_MODELS_DIR}"; then
+        log_ok "OpenVINO text models in place (GPU text backend enabled)."
+    else
+        log_warn "could not unpack the OpenVINO text models; the parser stays on torch CPU."
+    fi
+    rm -f "${tmp}"
+}
+
 setup_venv() {
     if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
         log_info "creating the venv at ${VENV_DIR} (interpreter: ${PARSER_PY}) ..."
@@ -457,6 +514,7 @@ install_source
 setup_venv
 fetch_models
 fetch_vlm_model
+fetch_text_ov_models
 install_conf
 install_unit
 maybe_start
