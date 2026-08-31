@@ -48,7 +48,7 @@ NIMOTECH_REPOS=(
     "NimoOS-Terminal"       # the built-in web terminal (ttyd, tmux, a thin Go service)
     "NimoOS-Common"         # shared library: JWT, zap, HTTP, inter-service SDK
     "NimoOS-CLI"            # Cobra CLI for administration and diagnostics
-    "NimoOS-UI"             # Vue 2 SPA
+    "NimoOS-UI"             # Vue 3 web UI (served at the site root)
     "NimoOS-KVM"            # optional add-on: libvirt VM management; not part of the core install
 )
 

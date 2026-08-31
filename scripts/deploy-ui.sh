@@ -1,15 +1,16 @@
 #!/bin/bash
 # Build and deploy the frontend in one step.
-# The web UI is NimoOS-New-UI (Vue 3), served at the site root since 2026-08-29:
-#   Build output: NimoOS-New-UI/dist/
+# The web UI is NimoOS-UI (Vue 3, renamed from NimoOS-New-UI on 2026-08-30), served
+# at the site root since 2026-08-29:
+#   Build output: NimoOS-UI/dist/
 #   Deploy target: /var/lib/nimoos/www/
 #   URL: http://<host>/#/
-# The retired Vue 2 panel (NimoOS-UI) is no longer built or deployed by anything;
-# the first root deploy's --delete clears whatever it left at the root.
+# The retired Vue 2 panel (now NimoOS-Old-UI, archived) is no longer built or deployed
+# by anything; the first root deploy's --delete clears whatever it left at the root.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-UI_DIR="$REPO_ROOT/NimoOS-New-UI"
+UI_DIR="$REPO_ROOT/NimoOS-UI"
 BUILD_OUT="$UI_DIR/dist"
 DEPLOY_TARGET="/var/lib/nimoos/www"
 
