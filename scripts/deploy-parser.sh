@@ -58,8 +58,26 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
     sudo "$VENV/bin/pip" install --upgrade -r "$INSTALL_DIR/requirements.txt"
     # onnxruntime-openvino and onnxruntime share the same import path; pip happily
     # installs both and whichever wrote last wins. Make the OV build deterministic.
-    sudo "$VENV/bin/pip" uninstall -y onnxruntime >/dev/null 2>&1 || true
-    sudo "$VENV/bin/pip" install --force-reinstall --no-deps "onnxruntime-openvino>=1.24.1"
+    #
+    # Probe first: if OpenVINOExecutionProvider is already active, the swap is a
+    # no-op — skip it entirely (also avoids redoing it needlessly on every deploy).
+    if sudo "$VENV/bin/python" -c "
+import onnxruntime, sys
+sys.exit(0 if 'OpenVINOExecutionProvider' in onnxruntime.get_available_providers() else 1)
+" >/dev/null 2>&1; then
+        echo "    onnxruntime-openvino already active, skipping swap"
+    else
+        # Never uninstall before the replacement is confirmed installed: a network
+        # failure here must not leave the venv with NO onnxruntime module at all.
+        # --force-reinstall --no-deps overwrites the plain wheel's files in place
+        # (its RECORD becomes stale, a known cosmetic cost) without ever removing
+        # the module, so install-then-uninstall is safe in either order of success.
+        if sudo "$VENV/bin/pip" install --force-reinstall --no-deps "onnxruntime-openvino>=1.24.1"; then
+            sudo "$VENV/bin/pip" uninstall -y onnxruntime >/dev/null 2>&1 || true
+        else
+            echo "WARNING: onnxruntime-openvino swap failed; OCR will run on CPU EP" >&2
+        fi
+    fi
 else
     echo "==> [3/4] --no-deps: skipping pip install"
 fi

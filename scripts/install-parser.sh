@@ -448,6 +448,28 @@ setup_venv() {
     log_info "installing the dependencies (docling, rapidocr, torch and more; the first run downloads roughly 3GB of wheels, so expect a wait) ..."
     ${sudo_cmd} "${VENV_DIR}/bin/pip" install "${pip_args[@]}" --upgrade -r "${INSTALL_DIR}/requirements.txt"
     log_ok "Python dependencies installed."
+
+    # onnxruntime-openvino and onnxruntime share the same import path; pip happily
+    # installs both and whichever wrote last wins. Make the OV build deterministic
+    # (mirrors deploy-parser.sh's swap logic).
+    if ${sudo_cmd} "${VENV_DIR}/bin/python" -c "
+import onnxruntime, sys
+sys.exit(0 if 'OpenVINOExecutionProvider' in onnxruntime.get_available_providers() else 1)
+" >/dev/null 2>&1; then
+        log_ok "onnxruntime-openvino already active, skipping swap"
+    else
+        # Never uninstall before the replacement is confirmed installed: a network
+        # failure here must not leave the venv with NO onnxruntime module at all.
+        # --force-reinstall --no-deps overwrites the plain wheel's files in place
+        # (its RECORD becomes stale, a known cosmetic cost) without ever removing
+        # the module, so install-then-uninstall is safe in either order of success.
+        if ${sudo_cmd} "${VENV_DIR}/bin/pip" install "${pip_args[@]}" --force-reinstall --no-deps "onnxruntime-openvino>=1.24.1"; then
+            ${sudo_cmd} "${VENV_DIR}/bin/pip" uninstall -y onnxruntime >/dev/null 2>&1 || true
+            log_ok "onnxruntime-openvino swap complete."
+        else
+            log_warn "onnxruntime-openvino swap failed; OCR will run on CPU EP"
+        fi
+    fi
 }
 
 install_conf() {
