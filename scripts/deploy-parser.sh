@@ -56,6 +56,10 @@ sudo cp "$PARSER_SRC/requirements.txt" "$INSTALL_DIR/requirements.txt"
 if [[ "$SKIP_DEPS" -eq 0 ]]; then
     echo "==> [3/4] installing requirements.txt; already-satisfied packages are skipped ..."
     sudo "$VENV/bin/pip" install --upgrade -r "$INSTALL_DIR/requirements.txt"
+    # onnxruntime-openvino and onnxruntime share the same import path; pip happily
+    # installs both and whichever wrote last wins. Make the OV build deterministic.
+    sudo "$VENV/bin/pip" uninstall -y onnxruntime >/dev/null 2>&1 || true
+    sudo "$VENV/bin/pip" install --force-reinstall --no-deps "onnxruntime-openvino>=1.24.1"
 else
     echo "==> [3/4] --no-deps: skipping pip install"
 fi
