@@ -448,6 +448,30 @@ setup_venv() {
     log_info "installing the dependencies (docling, rapidocr, torch and more; the first run downloads roughly 3GB of wheels, so expect a wait) ..."
     ${sudo_cmd} "${VENV_DIR}/bin/pip" install "${pip_args[@]}" --upgrade -r "${INSTALL_DIR}/requirements.txt"
     log_ok "Python dependencies installed."
+
+    # onnxruntime-openvino and onnxruntime share the same import path; pip happily
+    # installs both and whichever wrote last wins. Make the OV build deterministic
+    # (mirrors deploy-parser.sh's swap logic).
+    #
+    # Deliberately no `pip uninstall onnxruntime` here: the plain wheel's dist-info
+    # is stale after the force-reinstall below (cosmetic `pip check` noise only),
+    # but its RECORD still lists the very same site-packages/onnxruntime/ paths the
+    # OV build just wrote — uninstalling by that stale RECORD deletes the OV
+    # build's files right back out from under it, silently corrupting a swap that
+    # just succeeded. Since this block reruns on every deploy, a plain-wheel stomp
+    # from some other requirements bump self-corrects on the next run's probe.
+    if ${sudo_cmd} "${VENV_DIR}/bin/python" -c "
+import onnxruntime, sys
+sys.exit(0 if 'OpenVINOExecutionProvider' in onnxruntime.get_available_providers() else 1)
+" >/dev/null 2>&1; then
+        log_ok "onnxruntime-openvino already active, skipping swap"
+    else
+        if ${sudo_cmd} "${VENV_DIR}/bin/pip" install "${pip_args[@]}" --force-reinstall --no-deps "onnxruntime-openvino>=1.24.1"; then
+            log_ok "onnxruntime-openvino swap complete."
+        else
+            log_warn "onnxruntime-openvino swap failed; OCR will run on CPU EP"
+        fi
+    fi
 }
 
 install_conf() {

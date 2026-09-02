@@ -56,6 +56,29 @@ sudo cp "$PARSER_SRC/requirements.txt" "$INSTALL_DIR/requirements.txt"
 if [[ "$SKIP_DEPS" -eq 0 ]]; then
     echo "==> [3/4] installing requirements.txt; already-satisfied packages are skipped ..."
     sudo "$VENV/bin/pip" install --upgrade -r "$INSTALL_DIR/requirements.txt"
+    # onnxruntime-openvino and onnxruntime share the same import path; pip happily
+    # installs both and whichever wrote last wins. Make the OV build deterministic.
+    #
+    # Probe first: if OpenVINOExecutionProvider is already active, the swap is a
+    # no-op — skip it entirely (also avoids redoing it needlessly on every deploy).
+    #
+    # Deliberately no `pip uninstall onnxruntime` here: the plain wheel's dist-info
+    # is stale after the force-reinstall below (cosmetic `pip check` noise only),
+    # but its RECORD still lists the very same site-packages/onnxruntime/ paths the
+    # OV build just wrote — uninstalling by that stale RECORD deletes the OV
+    # build's files right back out from under it, silently corrupting a swap that
+    # just succeeded. Since this block reruns on every deploy, a plain-wheel stomp
+    # from some other requirements bump self-corrects on the next run's probe.
+    if sudo "$VENV/bin/python" -c "
+import onnxruntime, sys
+sys.exit(0 if 'OpenVINOExecutionProvider' in onnxruntime.get_available_providers() else 1)
+" >/dev/null 2>&1; then
+        echo "    onnxruntime-openvino already active, skipping swap"
+    else
+        if ! sudo "$VENV/bin/pip" install --force-reinstall --no-deps "onnxruntime-openvino>=1.24.1"; then
+            echo "WARNING: onnxruntime-openvino swap failed; OCR will run on CPU EP" >&2
+        fi
+    fi
 else
     echo "==> [3/4] --no-deps: skipping pip install"
 fi
