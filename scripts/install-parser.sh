@@ -70,17 +70,25 @@ UV_BIN=""
 # least as new as the build machine's (2.36).
 #   NIMO_PARSER_BUILD=1   force a pip install from source, ignoring the prebuilt venv
 #   NIMO_PARSER_MODELS=0  skip the model download; parser fetches from HF on first run
-#   NIMO_PARSER_VLM=0     skip the caption (Qwen3-VL) model download
+#   NIMO_PARSER_VLM=0     skip the caption (Qwen3-VL) weights altogether
+#   NIMO_PARSER_VLM_OV=0/1   skip / force the caption OpenVINO IR download
+#                         (default: auto — only when an Intel GPU is detected)
+#   NIMO_PARSER_VLM_GGUF=1   also fetch the GGUF caption weights when the IR is
+#                         in place (default: GGUF only when the IR is not)
 #   NIMO_PARSER_OV=0/1    skip / force the OpenVINO text-model IR download
 #                         (default: auto — only when an Intel GPU is detected)
 readonly DEP_VENV="parser/parser-venv-${VERSION}-cp311-linux-x86_64.tar.zst"
 readonly DEP_HFCACHE="parser/hf-cache.tar.zst"
 readonly DEP_VLM="parser/qwen3-vl-4b-gguf.tar.zst"
+readonly DEP_VLM_OV="parser/qwen3-vl-4b-int4-ov.tar.zst"
+# sha256 of the published caption IR package; bump together with the artifact.
+readonly DEP_VLM_OV_SHA256="45fdf76c65c513c0187078dfe1c31d32e234ce723a3f0235074a8149ebf80956"
 readonly DEP_TEXT_OV="parser/bge-text-ov-fp16.tar.zst"
 # sha256 of the published bge-text-ov package; bump together with the artifact.
 readonly DEP_TEXT_OV_SHA256="9e58b1e1a6f588983a0d04f754be7e426761288a245e1d957b0af8fca2631039"
-# Holds the caption (Qwen3-VL) weights and, on Intel GPU machines, the
-# OpenVINO text IRs (bge-m3-ov/, bge-reranker-v2-m3-ov/).
+# Holds the caption (Qwen3-VL) weights — the OpenVINO IR (qwen3-vl-4b-int4/)
+# on Intel GPU machines, GGUF (qwen3-vl-4b-gguf/) elsewhere — and, on Intel
+# GPU machines, the OpenVINO text IRs (bge-m3-ov/, bge-reranker-v2-m3-ov/).
 readonly VLM_MODELS_DIR="${INSTALL_DIR}/models"
 
 readonly CONF_PATH="/etc/nimoos"
@@ -344,13 +352,58 @@ fetch_models() {
     rm -f "${tmp}"
 }
 
-# Download and unpack the Qwen3-VL caption weights (photo captions). Only the
-# GGUF form is shipped: it is pure data that llama.cpp can serve on any
-# hardware, CPU included — parser's backendselect picks candidates by which
-# weight form is actually on disk. The OpenVINO IR form is an on-machine
-# conversion for Intel GPUs (NimoOS-Parser scripts/vlm/README.md), never a
-# download. Non-fatal by design: without the weights the parser runs fine,
-# photo captions just stay off.
+# Caption (Qwen3-VL) weights come in two forms and the parser's backendselect
+# picks candidates by which form is actually on disk:
+#   - OpenVINO int4 IR (qwen3-vl-4b-int4/): Intel iGPU/dGPU via openvino-genai.
+#   - GGUF (qwen3-vl-4b-gguf/): llama.cpp, any hardware, CPU included.
+# An Intel GPU machine gets the IR and skips the GGUF: CPU llama.cpp captions
+# are what pushed a 16 GB NAS into the kernel OOM killer twice (2026-09-04),
+# and the IR must never be produced on the NAS itself (the export loads the
+# model in fp32, ~17 GB). The GGUF is the fallback whenever the IR is not on
+# disk — no Intel GPU, download failed, checksum mismatch — or when forced with
+# NIMO_PARSER_VLM_GGUF=1. Both fetches are non-fatal: without weights the
+# parser runs fine, photo captions just stay off.
+vlm_ir_present() {
+    [[ -f "${VLM_MODELS_DIR}/qwen3-vl-4b-int4/openvino_language_model.xml" ]]
+}
+
+fetch_vlm_ov_model() {
+    if [[ "${NIMO_PARSER_VLM:-1}" == "0" ]]; then
+        log_info "NIMO_PARSER_VLM=0: skipping the caption model download."; return
+    fi
+    if [[ "${NIMO_PARSER_VLM_OV:-auto}" == "0" ]]; then
+        log_info "NIMO_PARSER_VLM_OV=0: skipping the caption OpenVINO IR."; return
+    fi
+    if ! use_prebuilt; then
+        log_info "not x86_64, or building from source: skipping the caption OpenVINO IR."; return
+    fi
+    if [[ "${NIMO_PARSER_VLM_OV:-auto}" != "1" ]] && ! has_intel_gpu; then
+        log_info "no Intel GPU detected: skipping the caption OpenVINO IR (NIMO_PARSER_VLM_OV=1 forces the download)."; return
+    fi
+    if vlm_ir_present; then
+        log_ok "caption OpenVINO IR already in place, skipping the download."; return
+    fi
+    ensure_zstd || { log_warn "zstd is unavailable, skipping the caption OpenVINO IR"; return; }
+    local url="${NIMO_DEPS_BASE}/${DEP_VLM_OV}"
+    local tmp; tmp="$(mktemp)"
+    log_info "downloading the Qwen3-VL caption OpenVINO IR (~2.6G): ${url} ..."
+    if ! curl -fSL --retry 3 --connect-timeout 10 -o "${tmp}" "${url}"; then
+        log_warn "could not fetch the caption OpenVINO IR; falling back to the GGUF weights (CPU captions)."
+        rm -f "${tmp}"; return
+    fi
+    if ! echo "${DEP_VLM_OV_SHA256}  ${tmp}" | sha256sum -c --status -; then
+        log_warn "caption OpenVINO IR checksum mismatch (stale CDN copy?); falling back to the GGUF weights (CPU captions)."
+        rm -f "${tmp}"; return
+    fi
+    if ${sudo_cmd} mkdir -p "${VLM_MODELS_DIR}" \
+        && ${sudo_cmd} tar --zstd -xf "${tmp}" -C "${VLM_MODELS_DIR}"; then
+        log_ok "caption OpenVINO IR in place (GPU captions enabled)."
+    else
+        log_warn "could not unpack the caption OpenVINO IR; falling back to the GGUF weights (CPU captions)."
+    fi
+    rm -f "${tmp}"
+}
+
 fetch_vlm_model() {
     if [[ "${NIMO_PARSER_VLM:-1}" == "0" ]]; then
         log_info "NIMO_PARSER_VLM=0: skipping the caption model download."; return
@@ -358,6 +411,9 @@ fetch_vlm_model() {
     if [[ -f "${VLM_MODELS_DIR}/qwen3-vl-4b-gguf/model.gguf" \
        && -f "${VLM_MODELS_DIR}/qwen3-vl-4b-gguf/mmproj.gguf" ]]; then
         log_ok "caption model already in place, skipping the download."; return
+    fi
+    if [[ "${NIMO_PARSER_VLM_GGUF:-auto}" != "1" ]] && vlm_ir_present; then
+        log_info "caption OpenVINO IR in place: skipping the GGUF weights (NIMO_PARSER_VLM_GGUF=1 forces the download)."; return
     fi
     ensure_zstd || { log_warn "zstd is unavailable, skipping the caption model"; return; }
     local url="${NIMO_DEPS_BASE}/${DEP_VLM}"
@@ -537,6 +593,7 @@ install_dirs
 install_source
 setup_venv
 fetch_models
+fetch_vlm_ov_model
 fetch_vlm_model
 fetch_text_ov_models
 install_conf
