@@ -12,9 +12,10 @@
 #     stdout: "unchanged" | "updated"
 #     rc 0  installed unit equals the template (possibly after copying it)
 #     rc 1  template missing — nothing touched
-#     rc 2  copied, but systemd reports no memory ceiling for the unit
-#           (MemoryMax empty or infinity): the template is wrong or the
-#           daemon-reload did not take; do not start the service blindly.
+#     rc 2  systemd reports no memory ceiling for the unit (MemoryMax empty
+#           or infinity): the template is wrong or the daemon-reload did not
+#           take; do not start the service blindly.
+#     rc 3  could not install the template (mkdir/cp/daemon-reload failed)
 #
 #   NIMO_SUDO  privilege prefix for cp/systemctl (default "sudo"; empty = none)
 
@@ -25,9 +26,9 @@ sync_parser_unit() {
 
     local state="unchanged"
     if ! cmp -s "$src" "$dst" 2>/dev/null; then
-        ${sudo_cmd} mkdir -p "$(dirname "$dst")" || return 2
-        ${sudo_cmd} cp "$src" "$dst" || return 2
-        ${sudo_cmd} systemctl daemon-reload || return 2
+        ${sudo_cmd} mkdir -p "$(dirname "$dst")" || return 3
+        ${sudo_cmd} cp "$src" "$dst" || return 3
+        ${sudo_cmd} systemctl daemon-reload || return 3
         state="updated"
     fi
 

@@ -43,10 +43,19 @@ FULL_VERSION="$(cd "$PARSER_SRC" && resolve_full_version)"
 echo "==> [0/5] writing parser/_version.py (version: ${FULL_VERSION}) ..."
 printf 'VERSION = "%s"\n' "$FULL_VERSION" > "$PARSER_SRC/parser/_version.py"
 
-echo "==> [1/5] stopping $SERVICE ..."
+# The unit is part of the deploy: a template change (memory ceiling, env,
+# ordering) that only lands on fresh installs is drift waiting to bite. Done
+# before the stop so a bad template aborts while the old service still runs
+# (daemon-reload on a running unit is harmless).
+echo "==> [1/5] syncing the systemd unit from $UNIT_SRC ..."
+unit_state="$(sync_parser_unit "$UNIT_SRC" "$UNIT_DST" "$SERVICE")" \
+    || { echo "unit sync failed; leaving $SERVICE untouched" >&2; exit 1; }
+echo "    unit $unit_state"
+
+echo "==> [2/5] stopping $SERVICE ..."
 sudo systemctl stop "$SERVICE"
 
-echo "==> [2/5] syncing parser/ to $INSTALL_DIR/parser/ ..."
+echo "==> [3/5] syncing parser/ to $INSTALL_DIR/parser/ ..."
 if command -v rsync &>/dev/null; then
     sudo rsync -a --delete \
         --exclude='__pycache__' --exclude='*.pyc' \
@@ -58,7 +67,7 @@ fi
 sudo cp "$PARSER_SRC/requirements.txt" "$INSTALL_DIR/requirements.txt"
 
 if [[ "$SKIP_DEPS" -eq 0 ]]; then
-    echo "==> [3/5] installing requirements.txt; already-satisfied packages are skipped ..."
+    echo "==> [4/5] installing requirements.txt; already-satisfied packages are skipped ..."
     sudo "$VENV/bin/pip" install --upgrade -r "$INSTALL_DIR/requirements.txt"
     # onnxruntime-openvino and onnxruntime share the same import path; pip happily
     # installs both and whichever wrote last wins. Make the OV build deterministic.
@@ -84,15 +93,8 @@ sys.exit(0 if 'OpenVINOExecutionProvider' in onnxruntime.get_available_providers
         fi
     fi
 else
-    echo "==> [3/5] --no-deps: skipping pip install"
+    echo "==> [4/5] --no-deps: skipping pip install"
 fi
-
-# The unit is part of the deploy: a template change (memory ceiling, env,
-# ordering) that only lands on fresh installs is drift waiting to bite.
-echo "==> [4/5] syncing the systemd unit from $UNIT_SRC ..."
-unit_state="$(sync_parser_unit "$UNIT_SRC" "$UNIT_DST" "$SERVICE")" \
-    || { echo "unit sync failed; not starting $SERVICE" >&2; exit 1; }
-echo "    unit $unit_state"
 
 echo "==> [5/5] starting $SERVICE ..."
 sudo systemctl start "$SERVICE"
