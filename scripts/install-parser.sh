@@ -307,7 +307,7 @@ use_prebuilt() {
 fetch_prebuilt_venv() {
     ensure_zstd || { log_warn "zstd is unavailable, cannot use the prebuilt venv"; return 1; }
     local url="${NIMO_DEPS_BASE}/${DEP_VENV}"
-    local tmp; tmp="$(mktemp)"
+    local tmp; tmp="$(dl_tmp)"
     log_info "downloading the prebuilt venv: ${url} ..."
     if ! curl -fSL --retry 3 --connect-timeout 10 -o "${tmp}" "${url}"; then
         rm -f "${tmp}"; log_warn "prebuilt venv download failed (this version may not publish one)"; return 1
@@ -340,7 +340,7 @@ fetch_models() {
     fi
     ensure_zstd || { log_warn "zstd is unavailable, skipping the prebuilt models"; return; }
     local url="${NIMO_DEPS_BASE}/${DEP_HFCACHE}"
-    local tmp; tmp="$(mktemp)"
+    local tmp; tmp="$(dl_tmp)"
     log_info "downloading the prebuilt hf-cache (~7G unpacked): ${url} ..."
     if ${sudo_cmd} mkdir -p "${HF_CACHE_DIR}" \
         && curl -fSL --retry 3 --connect-timeout 10 -o "${tmp}" "${url}" \
@@ -363,6 +363,12 @@ fetch_models() {
 # disk — no Intel GPU, download failed, checksum mismatch — or when forced with
 # NIMO_PARSER_VLM_GGUF=1. Both fetches are non-fatal: without weights the
 # parser runs fine, photo captions just stay off.
+# Scratch file for a download. /var/tmp rather than mktemp's default /tmp: the
+# archives are 2.6-7 GB and /tmp is a RAM-backed tmpfs on many installs.
+dl_tmp() {
+    mktemp -p "${NIMO_DL_TMPDIR:-/var/tmp}"
+}
+
 vlm_ir_present() {
     [[ -f "${VLM_MODELS_DIR}/qwen3-vl-4b-int4/openvino_language_model.xml" ]]
 }
@@ -374,8 +380,8 @@ fetch_vlm_ov_model() {
     if [[ "${NIMO_PARSER_VLM_OV:-auto}" == "0" ]]; then
         log_info "NIMO_PARSER_VLM_OV=0: skipping the caption OpenVINO IR."; return
     fi
-    if ! use_prebuilt; then
-        log_info "not x86_64, or building from source: skipping the caption OpenVINO IR."; return
+    if [[ "$(uname -m)" != "x86_64" ]]; then
+        log_info "not x86_64: skipping the caption OpenVINO IR."; return
     fi
     if [[ "${NIMO_PARSER_VLM_OV:-auto}" != "1" ]] && ! has_intel_gpu; then
         log_info "no Intel GPU detected: skipping the caption OpenVINO IR (NIMO_PARSER_VLM_OV=1 forces the download)."; return
@@ -385,21 +391,27 @@ fetch_vlm_ov_model() {
     fi
     ensure_zstd || { log_warn "zstd is unavailable, skipping the caption OpenVINO IR"; return; }
     local url="${NIMO_DEPS_BASE}/${DEP_VLM_OV}"
-    local tmp; tmp="$(mktemp)"
+    local tmp; tmp="$(dl_tmp)"
     log_info "downloading the Qwen3-VL caption OpenVINO IR (~2.6G): ${url} ..."
     if ! curl -fSL --retry 3 --connect-timeout 10 -o "${tmp}" "${url}"; then
         log_warn "could not fetch the caption OpenVINO IR; falling back to the GGUF weights (CPU captions)."
+        rm -f "${tmp}"; return
+    fi
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        log_warn "sha256sum is unavailable, cannot verify the caption OpenVINO IR; falling back to the GGUF weights (CPU captions)."
         rm -f "${tmp}"; return
     fi
     if ! echo "${DEP_VLM_OV_SHA256}  ${tmp}" | sha256sum -c --status -; then
         log_warn "caption OpenVINO IR checksum mismatch (stale CDN copy?); falling back to the GGUF weights (CPU captions)."
         rm -f "${tmp}"; return
     fi
-    if ${sudo_cmd} mkdir -p "${VLM_MODELS_DIR}" \
-        && ${sudo_cmd} tar --zstd -xf "${tmp}" -C "${VLM_MODELS_DIR}"; then
+    if ! ${sudo_cmd} mkdir -p "${VLM_MODELS_DIR}" \
+        || ! ${sudo_cmd} tar --zstd -xf "${tmp}" -C "${VLM_MODELS_DIR}"; then
+        log_warn "could not unpack the caption OpenVINO IR; falling back to the GGUF weights (CPU captions)."
+    elif vlm_ir_present; then
         log_ok "caption OpenVINO IR in place (GPU captions enabled)."
     else
-        log_warn "could not unpack the caption OpenVINO IR; falling back to the GGUF weights (CPU captions)."
+        log_warn "caption OpenVINO IR package unpacked but ${VLM_MODELS_DIR}/qwen3-vl-4b-int4/ is not there (repackaged with a different layout?); falling back to the GGUF weights (CPU captions)."
     fi
     rm -f "${tmp}"
 }
@@ -417,7 +429,7 @@ fetch_vlm_model() {
     fi
     ensure_zstd || { log_warn "zstd is unavailable, skipping the caption model"; return; }
     local url="${NIMO_DEPS_BASE}/${DEP_VLM}"
-    local tmp; tmp="$(mktemp)"
+    local tmp; tmp="$(dl_tmp)"
     log_info "downloading the Qwen3-VL caption model (~3G): ${url} ..."
     if ${sudo_cmd} mkdir -p "${VLM_MODELS_DIR}" \
         && curl -fSL --retry 3 --connect-timeout 10 -o "${tmp}" "${url}" \
@@ -448,8 +460,10 @@ fetch_text_ov_models() {
     if [[ "${NIMO_PARSER_OV:-auto}" == "0" ]]; then
         log_info "NIMO_PARSER_OV=0: skipping the OpenVINO text models."; return
     fi
-    if ! use_prebuilt; then
-        log_info "not x86_64, or building from source: skipping the OpenVINO text models."; return
+    # Pure data with no tie to the venv's ABI, so NIMO_PARSER_BUILD=1 (pip from
+    # source) must not turn it off — only the CPU architecture matters.
+    if [[ "$(uname -m)" != "x86_64" ]]; then
+        log_info "not x86_64: skipping the OpenVINO text models."; return
     fi
     if [[ "${NIMO_PARSER_OV:-auto}" != "1" ]] && ! has_intel_gpu; then
         log_info "no Intel GPU detected: skipping the OpenVINO text models (NIMO_PARSER_OV=1 forces the download)."; return
@@ -460,7 +474,7 @@ fetch_text_ov_models() {
     fi
     ensure_zstd || { log_warn "zstd is unavailable, skipping the OpenVINO text models"; return; }
     local url="${NIMO_DEPS_BASE}/${DEP_TEXT_OV}"
-    local tmp; tmp="$(mktemp)"
+    local tmp; tmp="$(dl_tmp)"
     log_info "downloading the OpenVINO text models (~2G): ${url} ..."
     if ! curl -fSL --retry 3 --connect-timeout 10 -o "${tmp}" "${url}"; then
         log_warn "could not fetch the OpenVINO text models; the parser stays on torch CPU until ${VLM_MODELS_DIR}/bge-m3-ov/ is provisioned."

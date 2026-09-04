@@ -25,7 +25,7 @@ bad()  { fail=$((fail+1)); echo "  FAIL — $1"; }
 # ---- lift the functions out of the installer -------------------------------
 extract() { sed -n "/^$1() {/,/^}/p" "$SCRIPT"; }
 LIB="$TMP/lib.sh"
-for f in use_prebuilt ensure_zstd has_intel_gpu vlm_ir_present fetch_vlm_model fetch_vlm_ov_model; do
+for f in ensure_zstd has_intel_gpu dl_tmp vlm_ir_present fetch_vlm_model fetch_vlm_ov_model; do
     extract "$f" >> "$LIB"
     grep -q "^$f() {" "$LIB" && ok "installer defines $f()" || bad "installer defines $f()"
 done
@@ -41,7 +41,10 @@ echo ir > "$TMP/fx/qwen3-vl-4b-int4/openvino_language_model.xml"
 echo g > "$TMP/fx/qwen3-vl-4b-gguf/model.gguf"; echo m > "$TMP/fx/qwen3-vl-4b-gguf/mmproj.gguf"
 tar --zstd -cf "$TMP/fx/ov.tar.zst" -C "$TMP/fx" qwen3-vl-4b-int4
 tar --zstd -cf "$TMP/fx/gguf.tar.zst" -C "$TMP/fx" qwen3-vl-4b-gguf
+mkdir -p "$TMP/fx/bad/renamed-dir"; echo ir > "$TMP/fx/bad/renamed-dir/openvino_language_model.xml"
+tar --zstd -cf "$TMP/fx/ov-bad.tar.zst" -C "$TMP/fx/bad" renamed-dir
 OV_SHA="$(sha256sum "$TMP/fx/ov.tar.zst" | cut -d' ' -f1)"
+OV_BAD_SHA="$(sha256sum "$TMP/fx/ov-bad.tar.zst" | cut -d' ' -f1)"
 
 # curl shim: `curl ... -o <out> <url>`; serves the fixture matching the url,
 # logs the url, fails when FAKE_CURL_FAIL matches it.
@@ -52,7 +55,11 @@ out=""; url=""
 while [[ \$# -gt 0 ]]; do case "\$1" in -o) out="\$2"; shift 2;; -*) shift;; *) url="\$1"; shift;; esac; done
 echo "\$url" >> "\$FAKE_CURL_LOG"
 [[ -n "\${FAKE_CURL_FAIL:-}" && "\$url" == *"\$FAKE_CURL_FAIL"* ]] && exit 22
-case "\$url" in *int4-ov*) cp "$TMP/fx/ov.tar.zst" "\$out";; *gguf*) cp "$TMP/fx/gguf.tar.zst" "\$out";; *) exit 22;; esac
+case "\$url" in
+  *int4-ov*) if [[ "\${FAKE_OV_BAD:-0}" == 1 ]]; then cp "$TMP/fx/ov-bad.tar.zst" "\$out"; else cp "$TMP/fx/ov.tar.zst" "\$out"; fi;;
+  *gguf*) cp "$TMP/fx/gguf.tar.zst" "\$out";;
+  *) exit 22;;
+esac
 SHIM
 chmod +x "$TMP/bin/curl"
 export PATH="$TMP/bin:$PATH"
@@ -68,13 +75,13 @@ DEP_VLM_OV="parser/qwen3-vl-4b-int4-ov.tar.zst"
 DEP_VLM_OV_SHA256="$OV_SHA"
 # shellcheck disable=SC1090
 source "$LIB"
-use_prebuilt() { return 0; }
+export NIMO_DL_TMPDIR="$TMP"
 has_intel_gpu() { [[ "${FAKE_INTEL:-0}" == "1" ]]; }
 
 scenario() {   # scenario <name> <env assignments...>
     VLM_MODELS_DIR="$TMP/models-$1"; mkdir -p "$VLM_MODELS_DIR"
     : > "$FAKE_CURL_LOG"; : > "$TMP/warn.log"
-    unset FAKE_INTEL FAKE_CURL_FAIL NIMO_PARSER_VLM NIMO_PARSER_VLM_OV NIMO_PARSER_VLM_GGUF
+    unset FAKE_INTEL FAKE_CURL_FAIL FAKE_OV_BAD NIMO_PARSER_VLM NIMO_PARSER_VLM_OV NIMO_PARSER_VLM_GGUF NIMO_PARSER_BUILD
     local kv; for kv in "${@:2}"; do export "$kv"; done
     fetch_vlm_ov_model; fetch_vlm_model
 }
@@ -104,6 +111,21 @@ scenario badsha FAKE_INTEL=1
 ir_present   && bad "IR checksum mismatch → not unpacked" || ok "IR checksum mismatch → not unpacked"
 gguf_present && ok "IR checksum mismatch → GGUF fallback" || bad "IR checksum mismatch → GGUF fallback"
 DEP_VLM_OV_SHA256="$OV_SHA"
+
+# the IR is pure data: building the venv from source must not switch it off
+scenario frombuild FAKE_INTEL=1 NIMO_PARSER_BUILD=1
+ir_present   && ok "NIMO_PARSER_BUILD=1 → IR still fetched" || bad "NIMO_PARSER_BUILD=1 → IR still fetched"
+
+# a repackaged tarball with another top-level dir must not be reported as success
+DEP_VLM_OV_SHA256="$OV_BAD_SHA"
+scenario badlayout FAKE_INTEL=1 FAKE_OV_BAD=1
+ir_present   && bad "wrong layout → IR not present" || ok "wrong layout → IR not present"
+grep -q "not there" "$TMP/warn.log" && ok "wrong layout → warns about layout" || bad "wrong layout → warns about layout"
+gguf_present && ok "wrong layout → GGUF fallback" || bad "wrong layout → GGUF fallback"
+DEP_VLM_OV_SHA256="$OV_SHA"
+
+# download scratch goes to NIMO_DL_TMPDIR (/var/tmp by default) and is never left behind
+[[ -z "$(find "$TMP" -mindepth 1 -maxdepth 1 -name "tmp.*" -print -quit)" ]] && ok "no download scratch left behind" || bad "no download scratch left behind"
 
 scenario forceov FAKE_INTEL=0 NIMO_PARSER_VLM_OV=1
 ir_present   && ok "NIMO_PARSER_VLM_OV=1 → IR even without Intel GPU" || bad "NIMO_PARSER_VLM_OV=1 → IR even without Intel GPU"
