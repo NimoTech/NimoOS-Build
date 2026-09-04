@@ -1,7 +1,7 @@
 #!/bin/bash
 # Redeploy and restart nimoos-parser (Python).
-# Source: NimoOS-Parser/{parser/, requirements.txt}
-# Target: /opt/nimoos-parser/{parser/, venv/}
+# Source: NimoOS-Parser/{parser/, requirements.txt, build/sysroot/.../nimoos-parser.service}
+# Target: /opt/nimoos-parser/{parser/, venv/}, /usr/lib/systemd/system/nimoos-parser.service
 #
 # Usage: bash deploy-parser.sh [--no-deps]
 #   --no-deps  skip pip install, for when the code changed but requirements did not
@@ -35,14 +35,18 @@ fi
 
 source "$REPO_ROOT/NimoOS-Build/release/versions.conf"
 source "$REPO_ROOT/NimoOS-Build/release/lib/version_inject.sh"
+# shellcheck source=lib/parser-unit.sh
+source "$REPO_ROOT/NimoOS-Build/scripts/lib/parser-unit.sh"
+UNIT_SRC="$PARSER_SRC/build/sysroot/usr/lib/systemd/system/$SERVICE"
+UNIT_DST="/usr/lib/systemd/system/$SERVICE"
 FULL_VERSION="$(cd "$PARSER_SRC" && resolve_full_version)"
-echo "==> [0/4] writing parser/_version.py (version: ${FULL_VERSION}) ..."
+echo "==> [0/5] writing parser/_version.py (version: ${FULL_VERSION}) ..."
 printf 'VERSION = "%s"\n' "$FULL_VERSION" > "$PARSER_SRC/parser/_version.py"
 
-echo "==> [1/4] stopping $SERVICE ..."
+echo "==> [1/5] stopping $SERVICE ..."
 sudo systemctl stop "$SERVICE"
 
-echo "==> [2/4] syncing parser/ to $INSTALL_DIR/parser/ ..."
+echo "==> [2/5] syncing parser/ to $INSTALL_DIR/parser/ ..."
 if command -v rsync &>/dev/null; then
     sudo rsync -a --delete \
         --exclude='__pycache__' --exclude='*.pyc' \
@@ -54,7 +58,7 @@ fi
 sudo cp "$PARSER_SRC/requirements.txt" "$INSTALL_DIR/requirements.txt"
 
 if [[ "$SKIP_DEPS" -eq 0 ]]; then
-    echo "==> [3/4] installing requirements.txt; already-satisfied packages are skipped ..."
+    echo "==> [3/5] installing requirements.txt; already-satisfied packages are skipped ..."
     sudo "$VENV/bin/pip" install --upgrade -r "$INSTALL_DIR/requirements.txt"
     # onnxruntime-openvino and onnxruntime share the same import path; pip happily
     # installs both and whichever wrote last wins. Make the OV build deterministic.
@@ -80,10 +84,17 @@ sys.exit(0 if 'OpenVINOExecutionProvider' in onnxruntime.get_available_providers
         fi
     fi
 else
-    echo "==> [3/4] --no-deps: skipping pip install"
+    echo "==> [3/5] --no-deps: skipping pip install"
 fi
 
-echo "==> [4/4] starting $SERVICE ..."
+# The unit is part of the deploy: a template change (memory ceiling, env,
+# ordering) that only lands on fresh installs is drift waiting to bite.
+echo "==> [4/5] syncing the systemd unit from $UNIT_SRC ..."
+unit_state="$(sync_parser_unit "$UNIT_SRC" "$UNIT_DST" "$SERVICE")" \
+    || { echo "unit sync failed; not starting $SERVICE" >&2; exit 1; }
+echo "    unit $unit_state"
+
+echo "==> [5/5] starting $SERVICE ..."
 sudo systemctl start "$SERVICE"
 
 echo ""
