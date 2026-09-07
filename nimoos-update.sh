@@ -46,6 +46,13 @@ readonly UNAME_U
 TARGET_ARCH=""
 TMP_ROOT=/tmp/nimoos-updater
 NIMO_DOWNLOAD_DOMAIN="https://get.nimotech.ai/"
+# Key prefix the release artifacts live under, mirroring S3_PREFIX in
+# release/versions.conf: <domain><prefix>/<Project>/releases/download/<ver>/<tar>.
+# This used to read NimoTech/ (the GitHub org, from the Aliyun OSS era); the S3
+# layout never had that segment, so every core download 403'd and the updater
+# has been unusable since the S3 migration. nimoos-install.sh already carries
+# the right prefix because sync-install-script.sh regenerates its URL list.
+NIMO_DOWNLOAD_PREFIX="nimoos"
 
 # Version, overridable via --version or the environment. AppStore has its own line.
 NIMO_UPDATE_VERSION="${NIMO_UPDATE_VERSION:-v1.9.4-alpha1}"
@@ -197,7 +204,7 @@ core_pkg_url() {
     local ver arch
     if [ "${token}" = "appstore" ]; then ver="${NIMO_APPSTORE_VERSION}"; else ver="${NIMO_UPDATE_VERSION}"; fi
     if [ "${archmode}" = "all" ]; then arch="all"; else arch="${TARGET_ARCH}"; fi
-    echo "${NIMO_DOWNLOAD_DOMAIN}NimoTech/${project}/releases/download/${ver}/linux-${arch}-${token}-${ver}.tar.gz"
+    echo "${NIMO_DOWNLOAD_DOMAIN}${NIMO_DOWNLOAD_PREFIX}/${project}/releases/download/${ver}/linux-${arch}-${token}-${ver}.tar.gz"
 }
 
 Update_Core() {
