@@ -373,6 +373,11 @@ vlm_ir_present() {
     [[ -f "${VLM_MODELS_DIR}/qwen3-vl-4b-int4/openvino_language_model.xml" ]]
 }
 
+text_ov_present() {
+    [[ -f "${VLM_MODELS_DIR}/bge-m3-ov/openvino_model.xml" \
+    && -f "${VLM_MODELS_DIR}/bge-reranker-v2-m3-ov/openvino_model.xml" ]]
+}
+
 fetch_vlm_ov_model() {
     if [[ "${NIMO_PARSER_VLM:-1}" == "0" ]]; then
         log_info "NIMO_PARSER_VLM=0: skipping the caption model download."; return
@@ -468,8 +473,7 @@ fetch_text_ov_models() {
     if [[ "${NIMO_PARSER_OV:-auto}" != "1" ]] && ! has_intel_gpu; then
         log_info "no Intel GPU detected: skipping the OpenVINO text models (NIMO_PARSER_OV=1 forces the download)."; return
     fi
-    if [[ -f "${VLM_MODELS_DIR}/bge-m3-ov/openvino_model.xml" \
-       && -f "${VLM_MODELS_DIR}/bge-reranker-v2-m3-ov/openvino_model.xml" ]]; then
+    if text_ov_present; then
         log_ok "OpenVINO text models already in place, skipping the download."; return
     fi
     ensure_zstd || { log_warn "zstd is unavailable, skipping the OpenVINO text models"; return; }
@@ -493,6 +497,84 @@ fetch_text_ov_models() {
     rm -f "${tmp}"
 }
 
+# Every pip invocation goes through here so the optional mirror
+# (NIMO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple/, say) applies to all
+# of them by construction. sudo scrubs the environment, so the index has to be
+# an argument rather than PIP_INDEX_URL.
+pip_install() {
+    local args=()
+    [[ -n "${NIMO_PIP_INDEX:-}" ]] && args+=(-i "${NIMO_PIP_INDEX}")
+    ${sudo_cmd} "${VENV_DIR}/bin/pip" install "${args[@]}" "$@"
+}
+
+# The pin requirements.txt carries for one distribution, so a targeted install
+# below can never specify a different version than the bulk install would.
+# Anchored on the exact name (openvino must not match openvino-genai) and falls
+# back to the bare name when the distribution is unpinned or absent.
+req_spec() {
+    local dist="$1" line
+    line="$(grep -m1 -E "^${dist}([<>=!~[:space:]]|$)" "${INSTALL_DIR}/requirements.txt" 2>/dev/null)"
+    echo "${line:-${dist}}" | tr -d '[:space:]'
+}
+
+# OpenVINO IRs on disk are useless without the runtime that loads them, and the
+# prebuilt venv is a site-packages snapshot from a build machine: it can predate
+# a requirements.txt that added these, which is exactly what shipped in
+# v1.9.4-alpha1 — the installer fetched the Qwen3-VL IR on every Intel machine
+# and then reported success while each caption died with
+# `ModuleNotFoundError: No module named 'openvino_genai'` and the embedder sat on
+# CPU. So top the snapshot up rather than trusting it.
+#
+# Keyed on the weights actually present, not on the hardware probe: the IRs also
+# arrive by hand on air-gapped installs, and a machine with no IR has nothing to
+# accelerate. The import probe comes first so a complete snapshot needs no
+# network — the prebuilt path exists for hosts that cannot reach PyPI, and a
+# missing accelerator must degrade the feature, never fail the install.
+ensure_openvino_runtime() {
+    local dist=""
+    if vlm_ir_present; then
+        dist="openvino-genai"          # captions: openvino-genai pulls openvino in
+    elif text_ov_present; then
+        dist="openvino"                # embedder and reranker only need the core runtime
+    else
+        return 0
+    fi
+
+    local probe="${dist//-/_}" spec
+    spec="$(req_spec "${dist}")"
+    if ${sudo_cmd} "${VENV_DIR}/bin/python" -c "import ${probe}" >/dev/null 2>&1; then
+        log_ok "${dist} already present, skipping the install"
+    elif pip_install "${spec}"; then
+        log_ok "${spec} installed (the OpenVINO weights on disk are now loadable)."
+    else
+        log_warn "could not install ${spec}; the OpenVINO weights on disk cannot be loaded, so captions stay unavailable and the text backend stays on torch CPU."
+    fi
+}
+
+# onnxruntime-openvino and onnxruntime share the same import path; pip happily
+# installs both and whichever wrote last wins. Make the OV build deterministic
+# (mirrors deploy-parser.sh's swap logic).
+#
+# Deliberately no `pip uninstall onnxruntime` here: the plain wheel's dist-info
+# is stale after the force-reinstall below (cosmetic `pip check` noise only),
+# but its RECORD still lists the very same site-packages/onnxruntime/ paths the
+# OV build just wrote — uninstalling by that stale RECORD deletes the OV
+# build's files right back out from under it, silently corrupting a swap that
+# just succeeded. Since this block reruns on every deploy, a plain-wheel stomp
+# from some other requirements bump self-corrects on the next run's probe.
+ensure_onnxruntime_openvino() {
+    if ${sudo_cmd} "${VENV_DIR}/bin/python" -c "
+import onnxruntime, sys
+sys.exit(0 if 'OpenVINOExecutionProvider' in onnxruntime.get_available_providers() else 1)
+" >/dev/null 2>&1; then
+        log_ok "onnxruntime-openvino already active, skipping swap"
+    elif pip_install --force-reinstall --no-deps "$(req_spec onnxruntime-openvino)"; then
+        log_ok "onnxruntime-openvino swap complete."
+    else
+        log_warn "onnxruntime-openvino swap failed; OCR will run on CPU EP"
+    fi
+}
+
 setup_venv() {
     if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
         log_info "creating the venv at ${VENV_DIR} (interpreter: ${PARSER_PY}) ..."
@@ -502,46 +584,20 @@ setup_venv() {
     fi
 
     # On x86_64 prefer the prebuilt venv from the mirror — it unpacks in seconds
-    # and avoids pip entirely — then fall back to a pip install from source.
-    if use_prebuilt && fetch_prebuilt_venv; then
-        return
+    # and avoids the bulk pip install — then fall back to a pip install from
+    # source. Either way the accelerator packages are reconciled afterwards, so
+    # the two paths end up equivalent.
+    if ! (use_prebuilt && fetch_prebuilt_venv); then
+        use_prebuilt && log_warn "falling back to a pip install from source (the prebuilt venv is unavailable)."
+        log_info "upgrading pip ..."
+        pip_install --quiet --upgrade pip
+        log_info "installing the dependencies (docling, rapidocr, torch and more; the first run downloads roughly 3GB of wheels, so expect a wait) ..."
+        pip_install --upgrade -r "${INSTALL_DIR}/requirements.txt"
+        log_ok "Python dependencies installed."
     fi
-    use_prebuilt && log_warn "falling back to a pip install from source (the prebuilt venv is unavailable)."
 
-    # Optional pip mirror, e.g. NIMO_PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple/.
-    # sudo scrubs the environment, so pass it as an argument rather than relying
-    # on PIP_INDEX_URL.
-    local pip_args=()
-    [[ -n "${NIMO_PIP_INDEX:-}" ]] && pip_args+=(-i "${NIMO_PIP_INDEX}")
-    log_info "upgrading pip ..."
-    ${sudo_cmd} "${VENV_DIR}/bin/pip" install "${pip_args[@]}" --quiet --upgrade pip
-    log_info "installing the dependencies (docling, rapidocr, torch and more; the first run downloads roughly 3GB of wheels, so expect a wait) ..."
-    ${sudo_cmd} "${VENV_DIR}/bin/pip" install "${pip_args[@]}" --upgrade -r "${INSTALL_DIR}/requirements.txt"
-    log_ok "Python dependencies installed."
-
-    # onnxruntime-openvino and onnxruntime share the same import path; pip happily
-    # installs both and whichever wrote last wins. Make the OV build deterministic
-    # (mirrors deploy-parser.sh's swap logic).
-    #
-    # Deliberately no `pip uninstall onnxruntime` here: the plain wheel's dist-info
-    # is stale after the force-reinstall below (cosmetic `pip check` noise only),
-    # but its RECORD still lists the very same site-packages/onnxruntime/ paths the
-    # OV build just wrote — uninstalling by that stale RECORD deletes the OV
-    # build's files right back out from under it, silently corrupting a swap that
-    # just succeeded. Since this block reruns on every deploy, a plain-wheel stomp
-    # from some other requirements bump self-corrects on the next run's probe.
-    if ${sudo_cmd} "${VENV_DIR}/bin/python" -c "
-import onnxruntime, sys
-sys.exit(0 if 'OpenVINOExecutionProvider' in onnxruntime.get_available_providers() else 1)
-" >/dev/null 2>&1; then
-        log_ok "onnxruntime-openvino already active, skipping swap"
-    else
-        if ${sudo_cmd} "${VENV_DIR}/bin/pip" install "${pip_args[@]}" --force-reinstall --no-deps "onnxruntime-openvino>=1.24.1"; then
-            log_ok "onnxruntime-openvino swap complete."
-        else
-            log_warn "onnxruntime-openvino swap failed; OCR will run on CPU EP"
-        fi
-    fi
+    ensure_openvino_runtime
+    ensure_onnxruntime_openvino
 }
 
 install_conf() {
