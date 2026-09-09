@@ -35,7 +35,7 @@ AGENT_DIR_IN_CONTAINER="/usr/share/nimoos/agent"
 #               backends`, so omitting it crash-loops the container on import
 #               (missed 2026-08-19 — found by a restore deploy that would not
 #               come up, with the previous copy still on disk masking it)
-PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes toolbox lark tasks web)
+PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes toolbox lark tasks web ask)
 
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 
