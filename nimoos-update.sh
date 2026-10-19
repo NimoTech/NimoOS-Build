@@ -367,6 +367,20 @@ echo '
 '
 
 [[ "${UNAME_U}" == *Linux* ]] || Show 1 "this script supports Linux only."
+# The running version, as the UI reports it. Asked of the core service at the
+# address it publishes (it answers local requests without a token; the
+# gateway answers 401 to them). The binary's version verb only counts when it
+# prints a version (current builds print "git commit: private build").
+Running_Version() {
+    local url v
+    url="$(cat "${NIMO_RUN_DIR:-/var/run/nimoos}/nimoos.url" 2>/dev/null)"
+    if [ -n "${url}" ]; then
+        v="$(curl -s -m 5 "${url%/}/v1/sys/version" 2>/dev/null | sed -n 's/.*"current_version":"\([^"]*\)".*/\1/p')"
+    fi
+    [ -n "${v}" ] || v="$(timeout 5 nimoos version 2>/dev/null | grep -m1 -oE '^v?[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*')"
+    echo "${v}"
+}
+
 Check_Arch
 
 [[ "${DO_CORE}" == "1" ]]  && Update_Core  || Show 3 "skipping the core update (--only-stack)."
@@ -374,6 +388,5 @@ Check_Arch
 
 echo ""
 Show 0 "NimoOS updated to ${NIMO_UPDATE_VERSION}."
-if command -v nimoos >/dev/null 2>&1; then
-    Show 2 "core version now: $(nimoos -v 2>/dev/null || echo unknown)"
-fi
+running="$(Running_Version)"
+Show 2 "core version now: ${running:-unknown}"
