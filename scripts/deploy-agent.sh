@@ -35,7 +35,9 @@ AGENT_DIR_IN_CONTAINER="/usr/share/nimoos/agent"
 #               backends`, so omitting it crash-loops the container on import
 #               (missed 2026-08-19 — found by a restore deploy that would not
 #               come up, with the previous copy still on disk masking it)
-PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes toolbox lark tasks web ask)
+#   routing     smart-routing package (policy / store / handoff), imported by agent.py
+#   kg          set-retrieval attribute tables (worker + /agent/kg API), imported by main.py at startup
+PKG_DIRS=(skills fs attachments mcp_client netns egress mcp_server channels shell_guard notes toolbox lark tasks web ask routing kg)
 
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 
