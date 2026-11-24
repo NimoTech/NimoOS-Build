@@ -779,7 +779,8 @@ migrate_under_lock() {
     holder=$!
     for _ in $(seq 1 50); do flock -n "$LOCK" true || break; sleep 0.1; done   # until the holder has it
 }
-unmigrate() {
+unmigrate() {   # only after migrate_under_lock: an unpaired call would rm the real parser/ dir
+    [[ -L "$INSTALL/.current" && -d "$BOX/legacy-parser" ]] || { bad "unmigrate called without a migration to undo"; return; }
     rm -f -- "$INSTALL/.current" "$INSTALL/parser"; rm -rf -- "$BOX/managed"
     mv "$BOX/legacy-parser" "$INSTALL/parser"
 }
@@ -847,7 +848,6 @@ out="$(NIMO_PARSER_LIBRARY_ONLY=1 NIMO_PARSER_INSTALL_DIR="$CUSTOM" \
        bash -c 'f="$1"; shift; source "$f"; acquire_live_update_lock && echo LOCKED' _ "$HERE/install-parser.sh" 2>&1)"
 check "install-parser: locks a custom install dir whose parent did not exist" "grep -q LOCKED <<<'$out' && [[ -f '$BOX/custom-root/not-yet/.parser.update.lock' ]]"
 check "install-parser: no 'No such file' on the lock" "! grep -q 'No such file' <<<'$out'"
-unmigrate
 install_box_scripts "$DEPLOY_SRC" "$BUILD"
 
 ###############################################################################

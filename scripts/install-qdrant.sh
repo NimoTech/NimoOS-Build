@@ -337,6 +337,34 @@ qdrant_health_url() {
     echo "http://${host}:${port}/healthz"
 }
 
+# The API key the readiness probe has to send. write_config keeps an existing
+# config.yaml, and a Qdrant with service.api_key (or only read_only_api_key)
+# answers /healthz with 401 to an anonymous probe. NIMO_QDRANT_API_KEY overrides
+# (e.g. a key set through QDRANT__SERVICE__API_KEY, or with NIMO_QDRANT_HEALTH_URL).
+# Prints the key on stdout for a caller to capture; never log it.
+qdrant_api_key() {
+    if [[ -n "${NIMO_QDRANT_API_KEY:-}" ]]; then printf '%s' "$NIMO_QDRANT_API_KEY"; return 0; fi
+    [[ -f "$CONF_FILE" ]] || return 0
+    local text
+    if [[ -r "$CONF_FILE" ]]; then text="$(cat "$CONF_FILE")"; else text="$(${sudo_cmd} cat "$CONF_FILE" 2>/dev/null)"; fi
+    awk '
+        /^service:[[:space:]]*(#.*)?$/ { s = 1; next }
+        /^[^[:space:]#]/              { s = 0 }
+        s && $1 == "api_key:"           { k = $2 }
+        s && $1 == "read_only_api_key:" { r = $2 }
+        END { printf "%s", (k != "" ? k : r) }' <<<"$text" | sed -E "s/^[\"']//; s/[\"']\$//"
+}
+
+# curl for Qdrant probes. With a key ($_qdrant_key, set by the caller), the
+# header goes to curl as a config on stdin from a shell builtin: it is never an
+# argument (ps shows every argument) and never in a log line.
+qdrant_curl() {
+    if [[ -z "${_qdrant_key:-}" ]]; then curl "$@"; return; fi
+    local k="${_qdrant_key//\\/\\\\}"
+    k="${k//\"/\\\"}"
+    printf 'header = "api-key: %s"\n' "$k" | curl --config - "$@"
+}
+
 start_and_verify() {   # [health URL]; default: the docker mapping 127.0.0.1:6333
     local url="${1:-http://127.0.0.1:6333/healthz}"
     log_info "starting $SERVICE_FILE ..."
@@ -348,25 +376,26 @@ start_and_verify() {   # [health URL]; default: the docker mapping 127.0.0.1:633
     # /healthz under one wall-clock budget and exit non-zero if it never answers.
     # Every probe and every pause is capped by the time left, so neither a port
     # that accepts but never answers nor a late reply can stretch the budget.
-    local budget="${NIMO_QDRANT_READY_TIMEOUT:-120}" deadline left probe
+    local budget="${NIMO_QDRANT_READY_TIMEOUT:-120}" deadline left probe _qdrant_key
+    _qdrant_key="$(qdrant_api_key)"
     deadline=$((SECONDS + budget))
     log_info "waiting for ${url} to answer (up to ${budget}s) ..."
     while :; do
         left=$((deadline - SECONDS))
         if (( left > 0 )); then
             probe=$(( left < 3 ? left : 3 ))
-            curl -sf -o /dev/null --connect-timeout "$(( probe < 2 ? probe : 2 ))" --max-time "$probe" "$url" \
+            qdrant_curl -sf -o /dev/null --connect-timeout "$(( probe < 2 ? probe : 2 ))" --max-time "$probe" "$url" \
                 && (( SECONDS <= deadline )) && break
             left=$((deadline - SECONDS))
         fi
         if (( left <= 0 )); then
             ${sudo_cmd} systemctl status "$SERVICE_FILE" --no-pager -l --lines=8 || true
-            log_fail "qdrant did not answer ${url} within ${budget}s; check journalctl -u $SERVICE_FILE -n 50. If this Qdrant listens elsewhere on purpose, set service.host / http_port in $CONF_FILE or NIMO_QDRANT_HEALTH_URL"
+            log_fail "qdrant did not answer ${url} within ${budget}s; check journalctl -u $SERVICE_FILE -n 50. If this Qdrant listens elsewhere on purpose, set service.host / http_port in $CONF_FILE or NIMO_QDRANT_HEALTH_URL; if it requires an API key that is not in $CONF_FILE, set NIMO_QDRANT_API_KEY"
         fi
         sleep 1
     done
     log_ok "qdrant is up (${url%/healthz})"
-    curl -sf --max-time 5 "${url%/healthz}/collections" 2>/dev/null | head -c 200; echo
+    qdrant_curl -sf --max-time 5 "${url%/healthz}/collections" 2>/dev/null | head -c 200; echo
 
     ${sudo_cmd} systemctl status "$SERVICE_FILE" --no-pager -l --lines=8 || true
 }
