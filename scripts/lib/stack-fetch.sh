@@ -17,7 +17,10 @@
 # ollama.com can still install. Layout:
 #   ${NIMO_DEPS_BASE}/qdrant/qdrant-<arch>.tar.gz
 #   ${NIMO_DEPS_BASE}/ollama/ollama-linux-<arch>.tar.zst
-: "${NIMO_DEPS_BASE:=https://get.nimotech.ai/deps}"
+# Derived from the download domain so a LAN mirror (the DEV channel serves both
+# artifacts and deps/ from one root) needs a single override. An explicit
+# NIMO_DEPS_BASE still wins.
+: "${NIMO_DEPS_BASE:=${NIMO_DOWNLOAD_DOMAIN%/}/deps}"
 
 # release/versions.conf is the single source of truth for both the version and the
 # key prefix, so read them from it when this library sits inside a checkout. Run
@@ -79,7 +82,7 @@ stack_download() {
         echo "[fetch] download failed: ${url}" >&2
         return 1
     fi
-    if ! tar -xzf "${tmp}" -C "${dest}"; then
+    if ! tar --no-same-owner -xzf "${tmp}" -C "${dest}"; then
         rm -f "${tmp}"
         echo "[fetch] could not unpack: ${tarfile}" >&2
         return 1

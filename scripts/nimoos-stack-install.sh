@@ -86,7 +86,9 @@ setup_logging() {
     dir="/var/log/nimoos"
     mkdir -p "${dir}" 2>/dev/null || dir="${TMPDIR:-/tmp}"
     STACK_LOG="${dir}/stack-install-${ts}.log"
-    exec > >(tee -a "${STACK_LOG}") 2>&1
+    # Keep the logger alive until the parent closes its pipe. Group TERM must
+    # not turn the parent's error message into SIGPIPE before EXIT cleanup.
+    exec > >(trap '' TERM INT; exec tee -a "${STACK_LOG}") 2>&1
     log_info "full install log: ${STACK_LOG}"
 }
 
@@ -120,10 +122,25 @@ selected() { # selected <key>
 # Bootstrap: run standalone via `curl | bash` there are no sibling scripts on
 # disk, so fetch them from the download mirror.
 # ---------------------------------------------------------------------------
-: "${NIMO_SCRIPTS_BASE:=https://get.nimotech.ai/get/scripts}"
+: "${NIMO_DOWNLOAD_DOMAIN:=https://get.nimotech.ai/}"
+: "${NIMO_SCRIPTS_BASE:=${NIMO_DOWNLOAD_DOMAIN%/}/get/scripts}"
 bootstrap_scripts() {
     [[ -f "${SCRIPT_DIR}/install-qdrant.sh" && -f "${SCRIPT_DIR}/lib/stack-fetch.sh" ]] && return 0
-    local boot; boot="$(mktemp -d)"
+    local root="${NIMO_STACK_WORK_ROOT:-/var/tmp/nimoos-stack-installer-${EUID}}"
+    [[ ! -L "$root" ]] || { log_err "linked stack workspace refused"; exit 1; }
+    mkdir -p -m 0700 "$root" || exit 1
+    [[ "$(stat -c%u "$root")" == "$EUID" ]] || { log_err "foreign stack workspace refused"; exit 1; }
+    exec 8>"$root/lock"
+    flock -x 8
+    # Only this private, locked workspace is reclaimed, including after a
+    # previous SIGKILL. Local checkouts and unrelated /tmp files are untouched.
+    local boot="$root/work"
+    rm -rf -- "$boot"
+    mkdir -m 0700 "$boot"
+    STACK_BOOT_DIR="$boot"
+    trap 'rm -rf -- "$STACK_BOOT_DIR"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     mkdir -p "${boot}/lib"
     log_info "no local sub-scripts found, downloading from ${NIMO_SCRIPTS_BASE} ..."
     local f
@@ -133,6 +150,25 @@ bootstrap_scripts() {
             log_err "could not download the sub-script: ${f}"; rm -rf "${boot}"; exit 1
         fi
     done
+    if selected parser; then
+        # The stack bootstrap can be published before the mirror maps these
+        # files. Legacy payloads still install during that window. Publish the
+        # whole tool set before enabling payloads with a component manifest.
+        local -a parser_tools=("$boot/lib/parser_components.py" "$boot/lib/parser-component-helper.sh" "$boot/lib/parser-gpu-branch.sh")
+        local relative
+        for f in "${parser_tools[@]}"; do
+            relative=${f#"$boot"/}
+            if ! curl -fsSL "${NIMO_SCRIPTS_BASE}/${relative}" -o "$f"; then
+                log_warn "could not download Parser component tool: ${relative}; the mirror must publish the complete tool set for versioned Parser payloads"
+                rm -f -- "${parser_tools[@]}"
+                break
+            fi
+        done
+        if [[ -f "$boot/lib/parser-component-helper.sh" ]] && ! chmod +x "$boot/lib/parser-component-helper.sh"; then
+            log_warn "could not make Parser component helper executable; versioned Parser payloads require the complete executable tool set"
+            rm -f -- "${parser_tools[@]}"
+        fi
+    fi
     SCRIPT_DIR="${boot}"
     log_info "sub-scripts ready: ${SCRIPT_DIR}"
 }
@@ -189,14 +225,28 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
     log_err "failed:    ${FAILED[*]}"
     echo ""
     echo "  to investigate: journalctl -u <service> -f"
-    echo "  to retry one:   bash ${SCRIPT_DIR}/install-<key>.sh"
+    if [[ -n "${STACK_BOOT_DIR:-}" ]]; then
+        printf '  to retry: curl -fsSL %q | sudo env NIMO_DOWNLOAD_DOMAIN=%q NIMO_KEY_PREFIX=%q' \
+            "${NIMO_DOWNLOAD_DOMAIN%/}/get/nimoos-stack-install.sh" "$NIMO_DOWNLOAD_DOMAIN" "${NIMO_KEY_PREFIX:-nimoos}"
+        [[ -n "${NIMO_DEPS_BASE:-}" ]] && printf ' NIMO_DEPS_BASE=%q' "$NIMO_DEPS_BASE"
+        printf ' bash -s -- --only %q' "${FAILED[0]}"
+        [[ -n "${STACK_VERSION:-}" ]] && printf ' --version %q' "$STACK_VERSION"
+        [[ "$START" == 1 ]] && printf ' --start'
+        printf '\n'
+    else
+        echo "  to retry one:   bash ${SCRIPT_DIR}/install-<key>.sh"
+    fi
     [[ -n "${STACK_LOG}" ]] && echo "  full log:       ${STACK_LOG}"
     exit 1
 fi
 
 echo ""
 log_info "All done. Next steps:"
-echo "  - AI:        ollama pull qwen2.5:7b  &&  sudo bash ${SCRIPT_DIR}/start-ai.sh"
+if [[ -n "${STACK_BOOT_DIR:-}" ]]; then
+    echo "  - AI:        ollama pull qwen2.5:7b; use the published start-ai.sh to start the agent."
+else
+    echo "  - AI:        ollama pull qwen2.5:7b  &&  sudo bash ${SCRIPT_DIR}/start-ai.sh"
+fi
 echo "  - retrieval: confirm qdrant is running on 127.0.0.1:6333, then"
 echo "               systemctl start nimoos-parser nimoos-search"
 echo "  - the Photos AI/ML backend is a separate step, not covered here."
