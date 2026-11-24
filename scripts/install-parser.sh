@@ -1601,6 +1601,16 @@ if [[ -f "${RESOLVED}/parser/component-manifest.json" ]]; then
     component_update
     return
 fi
+# The legacy path below writes into INSTALL_DIR in place. Hold the component
+# engine's writer lock (the live path's sibling .<name>.update.lock) from the
+# managed check to the end, so a migration that lands meanwhile is refused
+# rather than overwritten through its new links.
+update_lock="$(dirname "${INSTALL_DIR}")/.$(basename "${INSTALL_DIR}").update.lock"
+exec 8>>"${update_lock}"
+if ! flock -n 8; then
+    log_info "waiting for another Parser update to finish (${update_lock}) ..."
+    flock 8
+fi
 if [[ -L "${INSTALL_DIR}/.current" ]]; then
     log_fail "this Parser uses component updates; a payload without component-manifest.json cannot overwrite it. Use a complete compatible release or restore its recorded rollback."
 fi

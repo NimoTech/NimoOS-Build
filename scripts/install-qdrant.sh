@@ -67,7 +67,8 @@ if [[ -f "${SCRIPT_DIR}/lib/stack-fetch.sh" ]]; then
     # shellcheck source=lib/stack-fetch.sh
     source "${SCRIPT_DIR}/lib/stack-fetch.sh"
 fi
-: "${NIMO_DEPS_BASE:=https://get.nimotech.ai/deps}"
+: "${NIMO_DOWNLOAD_DOMAIN:=https://get.nimotech.ai/}"
+: "${NIMO_DEPS_BASE:=${NIMO_DOWNLOAD_DOMAIN%/}/deps}"
 
 readonly SERVICE_FILE="qdrant.service"
 readonly UNIT_DST="/usr/lib/systemd/system/${SERVICE_FILE}"
@@ -246,7 +247,7 @@ download_binary() {
     fi
 
     log_info "extracting ..."
-    tar -xzf "$src" -C "$tmpdir"
+    tar --no-same-owner -xzf "$src" -C "$tmpdir"
     local extracted
     extracted="$(find "$tmpdir" -maxdepth 2 -type f -name qdrant -executable | head -1)"
     [[ -n "$extracted" ]] || log_fail "no qdrant binary inside the tarball"
@@ -314,18 +315,24 @@ start_and_verify() {
     log_info "starting $SERVICE_FILE ..."
     ${sudo_cmd} systemctl start "$SERVICE_FILE"
 
-    log_info "waiting for port 6333 to listen (up to 15s) ..."
-    local ok=0
-    for _ in $(seq 1 15); do
-        if ss -tln 2>/dev/null | grep -qE '127\.0\.0\.1:6333'; then ok=1; break; fi
+    # A listening port is not readiness, and a warning is not a failure: callers
+    # (nimoos-stack-install.sh, the build's install.sh) go on to install Parser,
+    # whose post-start health check needs a Qdrant that answers. So wait for
+    # /healthz under one wall-clock budget (each probe is itself bounded, so a
+    # port that accepts but never answers cannot stall it) and exit non-zero if
+    # it never answers.
+    local budget="${NIMO_QDRANT_READY_TIMEOUT:-120}" deadline
+    deadline=$((SECONDS + budget))
+    log_info "waiting for http://127.0.0.1:6333/healthz to answer (up to ${budget}s) ..."
+    until curl -sf -o /dev/null --connect-timeout 2 --max-time 3 http://127.0.0.1:6333/healthz; do
+        if (( SECONDS >= deadline )); then
+            ${sudo_cmd} systemctl status "$SERVICE_FILE" --no-pager -l --lines=8 || true
+            log_fail "qdrant did not answer /healthz within ${budget}s; check journalctl -u $SERVICE_FILE -n 50"
+        fi
         sleep 1
     done
-    if [[ "$ok" -eq 1 ]]; then
-        log_ok "qdrant is up (127.0.0.1:6333)"
-        curl -sf http://127.0.0.1:6333/collections 2>/dev/null | head -c 200; echo
-    else
-        log_warn "port 6333 is not listening after 15s; check journalctl -u $SERVICE_FILE -n 50"
-    fi
+    log_ok "qdrant is up (127.0.0.1:6333)"
+    curl -sf --max-time 5 http://127.0.0.1:6333/collections 2>/dev/null | head -c 200; echo
 
     ${sudo_cmd} systemctl status "$SERVICE_FILE" --no-pager -l --lines=8 || true
 }

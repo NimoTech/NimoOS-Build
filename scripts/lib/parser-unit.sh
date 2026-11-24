@@ -16,8 +16,33 @@
 #           or infinity): the template is wrong or the daemon-reload did not
 #           take; do not start the service blindly.
 #     rc 3  could not install the template (mkdir/cp/daemon-reload failed)
+#     rc 4  the template delegates its cgroup but systemd reports Delegate
+#           other than yes: the batch cgroup cannot be created. A template
+#           that does not delegate (a Parser release before dynamic
+#           allocation phase 2, or a rollback to one) is not held to this, so
+#           an older Parser can still install its own unit.
 #
 #   NIMO_SUDO  privilege prefix for cp/systemctl (default "sudo"; empty = none)
+#
+#   parser_unit_template_delegates <template>
+#     rc 0 when the template turns cgroup delegation on (the last Delegate=
+#     assignment is a true boolean or a controller list), rc 1 otherwise.
+#     install-parser.sh keeps an inline copy (unit_template_delegates) because
+#     a `curl | bash` install fetches only a fixed list of sub-scripts;
+#     install-parser.unit.test.sh checks the two copies agree.
+
+parser_unit_template_delegates() {
+    [[ -f "$1" ]] || return 1
+    awk '
+        /^[ \t]*[#;]/ { next }
+        /^[ \t]*Delegate[ \t]*=/ {
+            v = $0
+            sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
+            last = tolower(v)
+        }
+        END { exit (last == "" || last == "no" || last == "false" || last == "off" || last == "0") ? 1 : 0 }
+    ' "$1"
+}
 
 sync_parser_unit() {
     local src="$1" dst="$2" unit="$3"
@@ -37,6 +62,14 @@ sync_parser_unit() {
     if [[ -z "$mem_max" || "$mem_max" == "infinity" ]]; then
         echo "the unit's memory ceiling is not in effect (MemoryMax=${mem_max:-empty}); check $dst" >&2
         return 2
+    fi
+    if parser_unit_template_delegates "$src"; then
+        local delegate
+        delegate="$(${sudo_cmd} systemctl show "$unit" -p Delegate --value 2>/dev/null)"
+        if [[ "$delegate" != "yes" ]]; then
+            echo "the template delegates the unit's cgroup but systemd does not (Delegate=${delegate:-empty}); check $dst and its drop-ins" >&2
+            return 4
+        fi
     fi
     echo "$state"
     return 0
