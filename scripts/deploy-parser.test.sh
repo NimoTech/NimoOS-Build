@@ -838,6 +838,16 @@ wait "$holder"
 check "install-parser: refuses the migration that landed while it waited" "[[ $rc -ne 0 && $rc -ne 124 ]] && grep -q 'this Parser uses component updates' '$BOX/out'"
 check "install-parser: the managed release keeps its files" "[[ -f '$BOX/managed/parser/new.py' ]]"
 unmigrate
+
+# A custom install location whose parent does not exist yet: the lock lives next
+# to INSTALL_DIR, so the parent has to be created before it is opened (the engine
+# does the same). The real function, from the installer sourced as a library.
+CUSTOM="$BOX/custom-root/not-yet/parser"
+out="$(NIMO_PARSER_LIBRARY_ONLY=1 NIMO_PARSER_INSTALL_DIR="$CUSTOM" \
+       bash -c 'f="$1"; shift; source "$f"; acquire_live_update_lock && echo LOCKED' _ "$HERE/install-parser.sh" 2>&1)"
+check "install-parser: locks a custom install dir whose parent did not exist" "grep -q LOCKED <<<'$out' && [[ -f '$BOX/custom-root/not-yet/.parser.update.lock' ]]"
+check "install-parser: no 'No such file' on the lock" "! grep -q 'No such file' <<<'$out'"
+unmigrate
 install_box_scripts "$DEPLOY_SRC" "$BUILD"
 
 ###############################################################################

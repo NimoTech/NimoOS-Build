@@ -83,6 +83,7 @@ fi
 # writes see one state: a migration that finishes while this deploy waits is
 # refused here instead of being written through its new parser/ link.
 UPDATE_LOCK="$(dirname "$INSTALL_DIR")/.$(basename "$INSTALL_DIR").update.lock"
+[[ -d "$(dirname "$INSTALL_DIR")" ]] || sudo mkdir -p "$(dirname "$INSTALL_DIR")"
 sudo touch "$UPDATE_LOCK"
 exec 8<"$UPDATE_LOCK"
 if ! flock -n 8; then

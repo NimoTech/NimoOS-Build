@@ -311,28 +311,62 @@ EOF
     ${sudo_cmd} systemctl enable --force --no-ask-password "$SERVICE_FILE"
 }
 
-start_and_verify() {
+# The /healthz URL of the Qdrant this script just started. Native mode keeps an
+# existing config.yaml (write_config), so read its service.host / http_port
+# rather than assuming 127.0.0.1:6333; a wildcard listen address is probed on
+# loopback. NIMO_QDRANT_HEALTH_URL overrides both, for setups this cannot read.
+qdrant_health_url() {
+    if [[ -n "${NIMO_QDRANT_HEALTH_URL:-}" ]]; then echo "$NIMO_QDRANT_HEALTH_URL"; return; fi
+    local host=127.0.0.1 port=6333 h="" p=""
+    if [[ -f "$CONF_FILE" ]]; then
+        read -r h p < <(awk '
+            /^service:[[:space:]]*(#.*)?$/ { s = 1; next }
+            /^[^[:space:]#]/              { s = 0 }
+            s && $1 == "host:"            { h = $2 }
+            s && $1 == "http_port:"       { p = $2 }
+            END { print (h == "" ? "-" : h), (p == "" ? "-" : p) }' "$CONF_FILE")
+        h="${h//[\"\']/}"; p="${p//[\"\']/}"
+        [[ "$h" != "-" ]] && host="$h"
+        [[ "$p" =~ ^[0-9]+$ ]] && port="$p"
+    fi
+    case "$host" in
+        0.0.0.0|::|"[::]") host=127.0.0.1 ;;
+        \[*\])             ;;
+        *:*)               host="[$host]" ;;
+    esac
+    echo "http://${host}:${port}/healthz"
+}
+
+start_and_verify() {   # [health URL]; default: the docker mapping 127.0.0.1:6333
+    local url="${1:-http://127.0.0.1:6333/healthz}"
     log_info "starting $SERVICE_FILE ..."
     ${sudo_cmd} systemctl start "$SERVICE_FILE"
 
     # A listening port is not readiness, and a warning is not a failure: callers
     # (nimoos-stack-install.sh, the build's install.sh) go on to install Parser,
     # whose post-start health check needs a Qdrant that answers. So wait for
-    # /healthz under one wall-clock budget (each probe is itself bounded, so a
-    # port that accepts but never answers cannot stall it) and exit non-zero if
-    # it never answers.
-    local budget="${NIMO_QDRANT_READY_TIMEOUT:-120}" deadline
+    # /healthz under one wall-clock budget and exit non-zero if it never answers.
+    # Every probe and every pause is capped by the time left, so neither a port
+    # that accepts but never answers nor a late reply can stretch the budget.
+    local budget="${NIMO_QDRANT_READY_TIMEOUT:-120}" deadline left probe
     deadline=$((SECONDS + budget))
-    log_info "waiting for http://127.0.0.1:6333/healthz to answer (up to ${budget}s) ..."
-    until curl -sf -o /dev/null --connect-timeout 2 --max-time 3 http://127.0.0.1:6333/healthz; do
-        if (( SECONDS >= deadline )); then
+    log_info "waiting for ${url} to answer (up to ${budget}s) ..."
+    while :; do
+        left=$((deadline - SECONDS))
+        if (( left > 0 )); then
+            probe=$(( left < 3 ? left : 3 ))
+            curl -sf -o /dev/null --connect-timeout "$(( probe < 2 ? probe : 2 ))" --max-time "$probe" "$url" \
+                && (( SECONDS <= deadline )) && break
+            left=$((deadline - SECONDS))
+        fi
+        if (( left <= 0 )); then
             ${sudo_cmd} systemctl status "$SERVICE_FILE" --no-pager -l --lines=8 || true
-            log_fail "qdrant did not answer /healthz within ${budget}s; check journalctl -u $SERVICE_FILE -n 50"
+            log_fail "qdrant did not answer ${url} within ${budget}s; check journalctl -u $SERVICE_FILE -n 50. If this Qdrant listens elsewhere on purpose, set service.host / http_port in $CONF_FILE or NIMO_QDRANT_HEALTH_URL"
         fi
         sleep 1
     done
-    log_ok "qdrant is up (127.0.0.1:6333)"
-    curl -sf --max-time 5 http://127.0.0.1:6333/collections 2>/dev/null | head -c 200; echo
+    log_ok "qdrant is up (${url%/healthz})"
+    curl -sf --max-time 5 "${url%/healthz}/collections" 2>/dev/null | head -c 200; echo
 
     ${sudo_cmd} systemctl status "$SERVICE_FILE" --no-pager -l --lines=8 || true
 }
@@ -379,7 +413,7 @@ if [[ "${NATIVE_OK}" -eq 1 && "${FORCE_DOCKER}" -eq 0 ]]; then
     write_config
     stop_docker_qdrant
     write_unit
-    start_and_verify
+    start_and_verify "$(qdrant_health_url)"
     restart_dependents
     maybe_remove_docker
     MODE_NOTE="binary:      $BIN_DST
@@ -389,7 +423,7 @@ else
     # data directory, same 127.0.0.1-only exposure, engine in a container.
     verify_storage
     install_docker_qdrant
-    start_and_verify
+    start_and_verify "${NIMO_QDRANT_HEALTH_URL:-http://127.0.0.1:6333/healthz}"
     restart_dependents
     MODE_NOTE="engine:      docker (qdrant/qdrant:${QDRANT_VERSION}, wrapped in ${SERVICE_FILE})"
 fi
