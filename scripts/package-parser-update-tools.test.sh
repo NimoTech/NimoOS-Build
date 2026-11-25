@@ -36,6 +36,10 @@ tar -tvzf "$TMP/out1/parser-update-tools.tar.gz" | awk '$6=="lib/parser-componen
 (cd "$TMP/out1" && sha256sum -c --quiet parser-update-tools.tar.gz.sha256) && ok ".sha256 verifies" || bad ".sha256 does not verify"
 bash "$d/package-parser-update-tools.sh" "$TMP/out2" > /dev/null 2>&1
 cmp -s "$TMP/out1/parser-update-tools.tar.gz" "$TMP/out2/parser-update-tools.tar.gz" && ok "reproducible: a second run is byte-identical" || bad "two runs differ"
+chmod g+w "$d/install-parser.sh" "$d/lib/"*
+bash "$d/package-parser-update-tools.sh" "$TMP/group-writable" > /dev/null 2>&1
+cmp -s "$TMP/out1/parser-update-tools.tar.gz" "$TMP/group-writable/parser-update-tools.tar.gz" \
+  && ok "checkout group-write mode does not change the artifact" || bad "checkout permissions changed the bundle"
 bash "$d/package-parser-update-tools.sh" "$TMP/out1" > "$TMP/log" 2>&1 && bad "overwrote an existing bundle" || ok "refuses to overwrite an existing bundle"
 
 d="$(box nox)"; chmod 644 "$d/lib/parser-component-helper.sh"

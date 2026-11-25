@@ -18,7 +18,8 @@ done
 # The engine executes the helper directly; a checkout that lost the mode bit
 # would ship a bundle that cannot prepare anything.
 [[ -x "$here/lib/parser-component-helper.sh" ]] || { echo 'updater file must be executable: lib/parser-component-helper.sh' >&2; exit 1; }
-tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf "$stage/$name" -C "$here" "${files[@]}"
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode='a=rX,u+w' \
+    -czf "$stage/$name" -C "$here" "${files[@]}"
 (cd "$stage"; sha256sum "$name" > "$name.sha256")
 # No-clobber hard-link publication; a second writer cannot replace a name.
 ln "$stage/$name" "$out/$name"

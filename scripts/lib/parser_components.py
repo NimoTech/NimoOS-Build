@@ -436,12 +436,23 @@ def legacy_model_items(root, spec, data_mounts=()):
         raise UpdateError("legacy model checksum catalog is missing")
     if sha256_file(catalog) != spec["legacy_files_manifest_sha256"]:
         raise UpdateError("legacy model checksum catalog does not match the pinned bundle")
+    # Image installs expose models, hf-cache and the checksum catalog at the
+    # live anchor, while the other metadata stays beside that catalog in the
+    # original artifact. Only use that artifact when both live roots resolve
+    # to its exact directories; a missing file is never an integrity bypass.
+    artifact = catalog.parent
+    artifact_layout = all(
+        legacy_model_target(root / name, trusted_roots) == artifact / name
+        for name in COMPONENT_LINKS["models"]
+    )
     for name in MODEL_METADATA:
         if name == catalog_name:
             continue
         path = root / name
         pin = spec.get("legacy_metadata_sha256", {}).get(name)
         if pin:
+            if not exists(path) and artifact_layout:
+                path = artifact / name
             path = legacy_model_target(path, trusted_roots)
             if not path.is_file() or sha256_file(path) != pin:
                 raise UpdateError(f"legacy model metadata does not match the pinned bundle: {name}")
@@ -646,7 +657,7 @@ class Installer:
                 if release is not None}
 
     def component_refs(self, state):
-        references = set()
+        references = set(state.get("model_aliases", {}))
         for release in self.retained_releases(state):
             metadata = self.release_metadata(release)
             references.update(metadata["components"].values())
@@ -695,7 +706,7 @@ class Installer:
         if sysroot.is_dir():
             code_bytes += tree_size(sysroot)
         kept = code_bytes + (tree_size(flm) if flm is not None else 0)
-        kept += sum(tree_size(path) for path in backups)
+        backup_bytes = sum(tree_size(path) for path in backups)
         peak = kept
         for name in changed:
             spec = self.manifest["components"][name]
@@ -703,9 +714,14 @@ class Installer:
                 kept += spec["unpacked_bytes"]
                 peak = max(peak, kept + spec["size_bytes"])
             else:
-                legacy_bytes = sum(tree_size(path) for _, path in adopted[name])
+                relocated = name == "models" and self.model_relocation(adopted[name])
+                legacy_bytes = sum(tree_size(path) for key, path in adopted[name]
+                                   if not relocated or key not in COMPONENT_LINKS["models"])
                 kept += legacy_bytes
                 peak = max(peak, kept)
+        # Snapshot the old anchor only after dependency archives have been
+        # consumed. Rollback bytes and download scratch need not coexist.
+        peak = max(peak, kept + backup_bytes)
         # The runtime archive is site-packages only. Leave room for the
         # standalone interpreter, the venv seed and the helper's scratch.
         interpreter = 512 * CHUNK if "runtime" in changed else 0
@@ -730,6 +746,12 @@ class Installer:
         spec = self.manifest["components"][name]
         relative = f"components/{name}/{spec['id']}-{self.tx['id']}"
         candidate = self.create_component(relative)
+        if name == "models" and adopted is not None and self.model_relocation(adopted):
+            self.relocate_models(candidate, relative, adopted)
+            selected[name] = relative
+            self.call("validate", component=name, candidate=candidate, refs=selected)
+            write_json(candidate / ".parser-component.json", {"pin": self.component_pin(name)})
+            return
         extracted = self.tx_dir / "extracted"
         archive = ""
         if adopted is not None:
@@ -782,6 +804,108 @@ class Installer:
         self.save()
         candidate.mkdir()
         return candidate
+
+    def model_relocation(self, items):
+        """Only move verified real roots on the store's persistent filesystem.
+
+        The asset repository keeps its directory and metadata. Compatibility
+        links replace the two moved roots; no shared hardlinked file copies and
+        no takeover of unrelated files or of RAUC's artifact directory.
+        """
+        roots = {key: path for key, path in items if key in COMPONENT_LINKS["models"]}
+        if set(roots) != set(COMPONENT_LINKS["models"]):
+            return None
+        if len({path.parent for path in roots.values()}) != 1:
+            return None
+        mounts = list(mount_entries())
+        store_mount = deepest_mount(self.store, mounts)
+        for path in roots.values():
+            if (path.resolve() != path or not path.is_dir()
+                    or path.is_relative_to(self.live) or path.is_relative_to(self.store)
+                    or self.store.is_relative_to(path)
+                    or not any(path.is_relative_to(root) and path != root
+                               for root in self.legacy_model_mounts())
+                    or deepest_mount(path, mounts) != store_mount):
+                return None
+        # Relative links within the two roots retain their meaning after the
+        # move. Absolute links or links into the asset's other files do not.
+        for root in roots.values():
+            for directory, subdirs, files in os.walk(root, followlinks=False):
+                for name in (*subdirs, *files):
+                    entry = Path(directory) / name
+                    if entry.is_symlink() and (
+                        os.path.isabs(os.readlink(entry))
+                        or not any(entry.resolve().is_relative_to(path) for path in roots.values())
+                    ):
+                        return None
+        return roots
+
+    def begin_switch(self):
+        if self.tx["stage"] == "switch":
+            return
+        self.tx["old_active"] = self.service("active", statuses=(0, 1)) == 0
+        self.tx["stage"] = "switch"
+        self.save()
+        if self.tx["old_active"]:
+            self.service("stop")
+
+    def relocate_models(self, candidate, relative, items):
+        roots = self.model_relocation(items)
+        if roots is None:
+            raise UpdateError("legacy model location changed during staging")
+        for key, source in items:
+            if key not in roots:
+                shutil.copy2(source, candidate / key)
+        if self.args.layout == "anchor":
+            self.copy_anchor_backup()
+        self.begin_switch()
+        # Record intent before the first rename. Recovery handles both the
+        # rename-before-link gap and partial completion of the two roots.
+        self.tx["model_moves"] = {
+            "ref": relative,
+            "roots": {key: {"source": str(path), "device": path.stat().st_dev,
+                            "inode": path.stat().st_ino} for key, path in roots.items()},
+        }
+        self.save()
+        for key, source in roots.items():
+            target = candidate / key
+            os.rename(source, target)
+            sync_dir(candidate)
+            sync_dir(source.parent)
+            source.symlink_to(target)
+            sync_dir(source.parent)
+        validate_copied_model_links(candidate)
+        legacy_model_items(candidate, self.manifest["components"]["models"])
+        print("Parser: adopted verified model directories without copying weights", flush=True)
+
+    def restore_models(self):
+        moves = self.tx.get("model_moves")
+        if not moves:
+            return
+        candidate = self.managed(moves["ref"], "components")
+        if moves["ref"] not in self.tx["owned"] or set(moves["roots"]) != set(COMPONENT_LINKS["models"]):
+            raise UpdateError("invalid model relocation journal")
+        for key, record in moves["roots"].items():
+            source, target = Path(record["source"]), candidate / key
+            if (source.parent.resolve() != source.parent or source.name != key
+                    or source.is_relative_to(self.store) or source.is_relative_to(self.live)
+                    or not any(source.is_relative_to(root) and source != root
+                               for root in self.legacy_model_mounts())):
+                raise UpdateError("invalid legacy model recovery path")
+            if exists(target):
+                if target.is_symlink() or (target.stat().st_dev, target.stat().st_ino) != (record["device"], record["inode"]):
+                    raise UpdateError("relocated model directory was replaced")
+                if exists(source):
+                    if not source.is_symlink() or os.readlink(source) != str(target):
+                        raise UpdateError("legacy model recovery path is occupied")
+                    source.unlink()
+                    sync_dir(source.parent)
+                os.rename(target, source)
+                sync_dir(source.parent)
+                sync_dir(candidate)
+            elif (source.is_symlink() or not source.is_dir()
+                  or (source.stat().st_dev, source.stat().st_ino) != (record["device"], record["inode"])):
+                raise UpdateError("legacy model directory is missing during recovery")
 
     def install_release(self, selected):
         self.release.mkdir()
@@ -895,7 +1019,7 @@ class Installer:
         return []
 
     def copy_anchor_backup(self):
-        if not self.tx["anchor_copy"]:
+        if not self.tx["anchor_copy"] or self.tx.get("anchor_backup_ready"):
             return
         self.legacy_backup.mkdir()
         for name, kind in self.tx["anchor_originals"].items():
@@ -904,6 +1028,8 @@ class Installer:
                 shutil.copytree(source, destination, symlinks=True)
             else:
                 shutil.copy2(source, destination, follow_symlinks=False)
+        self.tx["anchor_backup_ready"] = True
+        self.save()
 
     def update(self):
         history = self.history()
@@ -982,8 +1108,6 @@ class Installer:
         if not self.args.no_service and not self.args.code_only:
             self.save()
             self.call("preflight-host")
-        if self.args.layout == "anchor" and prior_kind != "symlink":
-            self.copy_anchor_backup()
         for name in changed:
             self.make_component(name, selected, adopted.get(name))
         if legacy_flm is not None:
@@ -992,6 +1116,8 @@ class Installer:
             shutil.copytree(legacy_flm, candidate, dirs_exist_ok=True, symlinks=True)
         if flm:
             selected["flm"] = flm
+        if self.args.layout == "anchor" and prior_kind != "symlink":
+            self.copy_anchor_backup()
         self.install_release(selected)
 
     def replace_live_link(self, target):
@@ -1020,12 +1146,8 @@ class Installer:
         sync_dir(self.live.parent)
 
     def switch_release(self):
-        self.tx["old_active"] = self.service("active", statuses=(0, 1)) == 0
+        self.begin_switch()
         should_run = self.tx["old_active"] or self.args.start
-        self.tx["stage"] = "switch"
-        self.save()
-        if self.tx["old_active"]:
-            self.service("stop")
         self.service("configure")
         if self.args.layout == "anchor":
             if self.tx["prior_kind"] != "symlink":
@@ -1046,7 +1168,10 @@ class Installer:
         was_switching = self.tx["stage"] == "switch"
         try:
             if was_switching:
+                if self.tx.get("model_moves"):
+                    self.service("stop")
                 self.restore_live()
+                self.restore_models()
         finally:
             self.cleanup_helper("rollback")
         if was_switching and self.tx["old_active"]:
@@ -1145,10 +1270,22 @@ class Installer:
 
     def plan_commit(self):
         previous = self.tx["history"]
+        aliases = dict(previous.get("model_aliases", {}))
+        if self.tx.get("model_moves"):
+            moves = self.tx["model_moves"]
+            aliases[moves["ref"]] = {key: item["source"] for key, item in moves["roots"].items()}
+        # Old image slots still use their asset paths. Pin a relocated component
+        # until the asset owner has removed every compatibility link. Its GC
+        # removes links, never the new managed roots that those links point to.
+        aliases = {ref: roots for ref, roots in aliases.items() if any(
+            Path(path).is_symlink() and os.readlink(path) == str(self.managed(ref, "components") / key)
+            for key, path in roots.items()
+        )}
         state = {
             "current": f"releases/{self.tx['id']}", "previous": previous["current"],
             "legacy": [*previous["legacy"], self.tx["id"]] if self.tx["prior_kind"] == "directory" else [],
             "pins": dict(previous["pins"]), "layout": self.args.layout, "live": str(self.live),
+            "model_aliases": aliases,
         }
         if self.tx["pin"]:
             state["pins"][self.tx["pin"]] = state["current"]

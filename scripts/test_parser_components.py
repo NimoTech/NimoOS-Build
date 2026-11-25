@@ -190,6 +190,14 @@ class ParserTransactionTest(unittest.TestCase):
             'sys.dont_write_bytecode = True\n'
             f'sys.path.insert(0, {str(Path(engine.__file__).parent)!r})\n'
             'import parser_components as engine\n'
+            'failure = os.getenv("FAIL", "")\n'
+            'if failure.startswith(("kill-model-", "term-model-")):\n'
+            '    rename = os.rename\n'
+            '    def interrupted_rename(source, destination):\n'
+            '        rename(source, destination)\n'
+            '        if "/components/models/" in str(destination) and Path(destination).name == failure.split("-model-", 1)[1]:\n'
+            '            os.kill(os.getpid(), 15 if failure.startswith("term-") else 9)\n'
+            '    os.rename = interrupted_rename\n'
             'free = os.getenv("FIXTURE_FREE")\n'
             'original_mount = os.getenv("FIXTURE_LEGACY_DATA_MOUNT")\n'
             'if original_mount:\n'
@@ -667,6 +675,146 @@ class ParserTransactionTest(unittest.TestCase):
         self.success(args=("--data-mount", str(data_dir)))
         self.assertEqual(len(self.requests()), 3)
         self.assertTrue(outside_path.is_file())
+
+    def image_artifact_without_anchor_metadata(self):
+        self.legacy()
+        bundle = self.pin_legacy_models(self.root / "data" / "artifact")
+        for name in ("MANIFEST.txt", "MANIFEST.files.sha256"):
+            (self.live / name).rename(bundle / name)
+        (self.live / "MANIFEST.files.sha256").symlink_to(bundle / "MANIFEST.files.sha256")
+        return bundle
+
+    def test_image_artifact_metadata_without_anchor_links_is_verified(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        inode = (bundle / "models" / "payload").stat().st_ino
+        repository_inode = bundle.stat().st_ino
+        self.success(args=("--data-mount", str(bundle.parent)), layout="anchor", direct_legacy="0")
+        self.assertEqual(self.requests(), ["/runtime/runtime-v1.tar", "/asr/asr-v1.tar"])
+        self.assertEqual((self.live / "MANIFEST.txt").read_text(), "verified metadata")
+        self.assertEqual((bundle / "MANIFEST.txt").read_text(), "verified metadata")
+        self.assertFalse((self.store / self.refs()["models"] / "models").is_symlink())
+        self.assertTrue((bundle / "models").is_symlink())
+        self.assertEqual((self.live / "models" / "payload").stat().st_ino, inode)
+        self.assertEqual(bundle.stat().st_ino, repository_inode)
+
+    def test_model_relocation_sigkill_between_rename_and_link_recovers(self):
+        for root_name in ("models", "hf-cache"):
+            with self.subTest(root=root_name):
+                # Each interruption is followed by rollback and a space refusal,
+                # so the same old layout must be available for the next case.
+                if not self.live.exists():
+                    bundle = self.image_artifact_without_anchor_metadata()
+                before = engine.legacy_digest([(bundle.name, bundle)])
+                kwargs = dict(args=("--data-mount", str(bundle.parent)), layout="anchor", direct_legacy="0")
+                result = self.update(fail="kill-model-" + root_name, **kwargs)
+                self.assertEqual(result.returncode, -9, result.stderr)
+                self.assertFalse((self.root / "running").exists())
+                self.assertFalse((bundle / root_name).exists())
+                self.error("insufficient free space", free="1", **kwargs)
+                self.assertEqual(engine.legacy_digest([(bundle.name, bundle)]), before)
+                self.assertTrue((self.root / "running").exists())
+        self.success(**kwargs)
+
+    def test_relocation_terminates_or_fails_validation_before_activation(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        before = engine.legacy_digest([(bundle.name, bundle)])
+        kwargs = dict(args=("--data-mount", str(bundle.parent)), layout="anchor", direct_legacy="0")
+        for failure, expected in (("term-model-models", "SIGTERM"),
+                                  ("term-model-hf-cache", "SIGTERM"),
+                                  ("validate-models", "validate models")):
+            with self.subTest(failure=failure):
+                self.error(expected, fail=failure, **kwargs)
+                self.assertEqual(engine.legacy_digest([(bundle.name, bundle)]), before)
+                self.assertEqual((self.live / "parser/code").read_text(), "legacy")
+                self.assertTrue((self.root / "running").exists())
+                self.assertFalse((self.live / ".current").exists())
+
+    def test_space_refusal_does_not_stop_or_relocate_legacy_models(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        before = engine.legacy_digest([(bundle.name, bundle)])
+        self.error("insufficient free space", free="1", args=("--data-mount", str(bundle.parent)),
+                   layout="anchor", direct_legacy="0")
+        self.assertEqual(engine.legacy_digest([(bundle.name, bundle)]), before)
+        self.assertNotIn("service-stop", self.calls())
+        self.assertEqual(self.requests(), [])
+        self.assertEqual(list((self.store / "components").iterdir()), [])
+
+    def test_relocated_models_remain_pinned_until_legacy_asset_links_are_removed(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        kwargs = dict(args=("--data-mount", str(bundle.parent)), layout="anchor", direct_legacy="0")
+        self.success(**kwargs)
+        old = self.store / self.refs()["models"]
+        self.artifact("models", "v2")
+        self.success(**kwargs)
+        self.success(**kwargs)
+        self.assertTrue(old.exists())
+        self.assertEqual((bundle / "models" / "payload").read_text(), "verified models")
+        # Simulate the asset owner's later GC, which unlinks, never follows,
+        # compatibility links. A retained Parser release still pins its models.
+        shutil.rmtree(bundle)
+        self.success(**kwargs)
+        self.assertFalse(old.exists())
+
+    def test_relocation_budget_does_not_count_a_second_copy_of_model_weights(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        # Uncatalogued mutable cache is preserved as-is, not silently discarded.
+        cache = bundle / "models" / ".ov-cache"
+        cache.mkdir()
+        with (cache / "compiled").open("wb") as stream:
+            stream.truncate(2 * 1024**3)
+        self.success(args=("--data-mount", str(bundle.parent)), layout="anchor", direct_legacy="0",
+                     free=str(700 * 1024**2))
+        self.assertEqual((self.live / "models" / ".ov-cache" / "compiled").stat().st_size, 2 * 1024**3)
+
+    def test_image_artifact_metadata_does_not_mask_corrupt_anchor_metadata(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        (self.live / "MANIFEST.txt").write_text("corrupt")
+        self.success(args=("--data-mount", str(bundle.parent)))
+        self.assertEqual(len(self.requests()), 3)
+
+    def test_image_artifact_metadata_does_not_accept_mixed_roots(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        other = bundle.parent / "other-hf-cache"
+        shutil.copytree(bundle / "hf-cache", other, symlinks=True)
+        (self.live / "hf-cache").unlink()
+        (self.live / "hf-cache").symlink_to(other)
+        self.success(args=("--data-mount", str(bundle.parent)))
+        self.assertEqual(len(self.requests()), 3)
+
+    def test_image_artifact_metadata_migration_health_failure_preserves_original(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        before = engine.legacy_digest([(bundle.name, bundle)])
+        self.error("service-health", fail="service-health", args=("--data-mount", str(bundle.parent)),
+                   layout="anchor", direct_legacy="0")
+        self.assertEqual(engine.legacy_digest([(bundle.name, bundle)]), before)
+        self.assertEqual((self.live / "models").resolve(), bundle / "models")
+        self.assertFalse((self.live / "MANIFEST.txt").exists())
+        self.assertTrue((self.root / "running").exists())
+
+    def test_image_artifact_sigkill_recovers_before_rechecking_space(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        before = engine.legacy_digest([(bundle.name, bundle)])
+        kwargs = dict(args=("--data-mount", str(bundle.parent)), layout="anchor", direct_legacy="0")
+        interrupted = self.update(fail="kill", **kwargs)
+        self.assertEqual(interrupted.returncode, -9)
+        self.assertTrue((self.store / "transaction.json").exists())
+        self.error("insufficient free space", free="1", **kwargs)
+        self.assertEqual(engine.legacy_digest([(bundle.name, bundle)]), before)
+        self.assertEqual((self.live / "parser" / "code").read_text(), "legacy")
+        self.assertEqual((self.live / "models").resolve(), bundle / "models")
+        self.assertTrue((self.root / "running").exists())
+        self.success(**kwargs)
+
+    def test_image_artifact_sigterm_preserves_old_layout_and_cleans_owned_work(self):
+        bundle = self.image_artifact_without_anchor_metadata()
+        before = engine.legacy_digest([(bundle.name, bundle)])
+        self.error("interrupted by SIGTERM", fail="terminate-helper",
+                   args=("--data-mount", str(bundle.parent)), layout="anchor", direct_legacy="0")
+        self.assertEqual(engine.legacy_digest([(bundle.name, bundle)]), before)
+        self.assertFalse((self.root / "host-staging").exists())
+        self.assertEqual((self.live / "parser" / "code").read_text(), "legacy")
+        self.assertFalse((self.live / "MANIFEST.txt").exists())
+        self.assertEqual(self.requests(), [])
 
     def test_architecture_mismatch_rejected_before_download_or_host_preflight(self):
         self.body["architecture"] = "fixture-mismatched-architecture"

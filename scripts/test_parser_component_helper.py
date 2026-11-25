@@ -252,6 +252,38 @@ class ParserComponentHelperTest(unittest.TestCase):
         self.assertFalse(flm.is_symlink())
         self.assertEqual((flm / "payload").read_text(), "existing FLM")
 
+    def test_existing_asset_is_adopted_without_copy_and_code_update_is_offline(self):
+        self.live.mkdir()
+        (self.live / "parser").mkdir()
+        (self.live / "parser/main.py").write_text("RELEASE = 0\n")
+        for name in ("models", "hf-cache", "MANIFEST.files.sha256"):
+            (self.live / name).symlink_to(self.models / name)
+        spec = self.specs["models"]
+        spec["legacy_files_manifest_sha256"] = digest(self.models / "MANIFEST.files.sha256")
+        spec["legacy_metadata_sha256"] = {
+            name: digest(self.models / name) for name in MODEL_METADATA if name != "MANIFEST.files.sha256"
+        }
+        weight = self.models / "models/weight"
+        inode = weight.stat().st_ino
+        cache = self.models / "models/.ov-cache"
+        cache.mkdir()
+        (cache / "compiled").write_text("old cache")
+        (self.archive_dir / spec["archive"]).unlink()
+        result, _, pins = self.update()
+        self.assertIn("without copying weights", result.stdout)
+        self.assertTrue((self.models / "models").is_symlink())
+        self.assertEqual(weight.stat().st_ino, inode)
+        self.assertEqual((self.live / "models/weight").stat().st_ino, inode)
+        self.assertEqual((self.live / "models/.ov-cache/compiled").read_text(), "old cache")
+        # Both compatibility and component paths refer to the same model
+        # version. Cache writes remain supported; no hardlink copies are made.
+        (self.live / "models/.ov-cache/compiled").write_text("new cache")
+        self.assertEqual((cache / "compiled").read_text(), "new cache")
+        for archive in self.archive_dir.iterdir():
+            archive.unlink()
+        _, _, next_pins = self.update("--code-only")
+        self.assertEqual(next_pins, pins)
+
 
 class ParserFLMCleanupTest(unittest.TestCase):
     def test_commit_and_rollback_cleanup(self):
