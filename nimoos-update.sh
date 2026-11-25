@@ -45,6 +45,7 @@ readonly UNAME_U
 
 TARGET_ARCH=""
 TMP_ROOT=/tmp/nimoos-updater
+CORE_TMP_DIR=""
 NIMO_DOWNLOAD_DOMAIN="https://get.nimotech.ai/"
 # Key prefix the release artifacts live under, mirroring S3_PREFIX in
 # release/versions.conf: <domain><prefix>/<Project>/releases/download/<ver>/<tar>.
@@ -74,6 +75,20 @@ readonly aCOLOUR=(
 
 trap 'onCtrlC' INT
 onCtrlC() { echo -e "${COLOUR_RESET}"; exit 1; }
+
+# Keep only this invocation's core staging directory until it is consumed.
+# Downloads, unpacking and payload scripts can exit before the normal cleanup.
+Cleanup_Core_Workspace() {
+    if [ -n "${CORE_TMP_DIR}" ]; then
+        if ${sudo_cmd} rm -rf -- "${CORE_TMP_DIR}"; then
+            CORE_TMP_DIR=""
+        else
+            Show 3 "could not remove core staging directory: ${CORE_TMP_DIR}"
+        fi
+    fi
+}
+trap 'Cleanup_Core_Workspace' EXIT
+trap 'exit 143' TERM
 
 # $1 0:OK 1:FAILED 2:INFO 3:NOTICE ; $2 message
 Show() {
@@ -213,6 +228,7 @@ Update_Core() {
     ${sudo_cmd} mkdir -p "${TMP_ROOT}"
     local TMP_DIR
     TMP_DIR=$(${sudo_cmd} mktemp -d -p "${TMP_ROOT}") || Show 1 "cannot create a temporary directory"
+    CORE_TMP_DIR="${TMP_DIR}"
 
     # 1) download every core package
     local line project token archmode url
@@ -311,7 +327,7 @@ Update_Core() {
     done
 
     # 9) clean up
-    ${sudo_cmd} rm -rf "${TMP_DIR}"
+    Cleanup_Core_Workspace
     Show 0 "core update complete."
 }
 
