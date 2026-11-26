@@ -78,7 +78,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            pkg-config libvirt-dev
 
       # One toolchain builds every component. The repositories declare go 1.21,
       # 1.22 and 1.23.0, so the newest wins; Go's own toolchain directive would
@@ -181,6 +182,20 @@ jobs:
             cp -a "$dir/build" "$staging/build"
             mkdir -p "$staging/build/sysroot/usr/bin"
 
+            # The clone fetches no Git LFS content, so an LFS-tracked file is a
+            # ~130-byte text pointer. Shipped, it lands at the real path and is
+            # taken for the file (NimoOS-KVM's virtio-win.iso would be attached
+            # to Windows VMs as the driver disc); leave it out, as release.sh's
+            # drop_lfs_pointers does. -size counts bytes here: -1k means empty.
+            while IFS= read -r -d '' f; do
+              first="$(head -c 64 "$f")"
+              case "$first" in
+                "version https://git-lfs.github.com/spec/"*)
+                  echo "::warning::$key: ${f#"$staging/"} is a Git LFS pointer; not packaged"
+                  rm -f "$f" ;;
+              esac
+            done < <(find "$staging/build" -type f -size -1024c -print0)
+
             # No go generate step: every component commits its generated code
             # now, so a fresh clone compiles as-is. Regenerating here would also
             # rebuild the message-bus clients against whatever is on
@@ -203,9 +218,15 @@ jobs:
             commit="$(git -C "$dir" rev-parse HEAD)"
             built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+            # go_links_dynamically names the exceptions (nimoos-kvm: libvirt has no
+            # static archive; libvirt-dev above is the host's, so this holds for
+            # amd64 only — an arm64 entry would need libvirt-dev:arm64).
+            extld="-extldflags '-static'"
+            if go_links_dynamically "$bin"; then extld=""; echo "$bin links dynamically"; fi
+
             ( cd "$dir" && CGO_ENABLED=1 GOOS=linux GOARCH="$goarch" GOARM="$goarm" CC="$cc" \
               go build \
-                -ldflags "$verflag -X main.commit=$commit -X main.date=$built_at -s -w -extldflags '-static'" \
+                -ldflags "$verflag -X main.commit=$commit -X main.date=$built_at -s -w $extld" \
                 -tags "musl netgo osusergo" \
                 -o "$staging/build/sysroot/usr/bin/$bin" . )
 

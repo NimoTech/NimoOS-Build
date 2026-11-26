@@ -96,12 +96,25 @@ wiki|NimoOS-Wiki|NimoOS-Wiki|go|arch|nimoos-wiki|nimoos-wiki|VERSION_WIKI|0
 search|NimoOS-Search|NimoOS-Search|go|arch|nimoos-search|nimoos-search|VERSION_SEARCH|0
 photos|NimoOS-Photos|NimoOS-Photos|go|arch|nimoos-photos|nimoos-photos|VERSION_PHOTOS|0
 terminal|NimoOS-Terminal|NimoOS-Terminal|go|arch|nimoos-terminal|nimoos-terminal|VERSION_TERMINAL|0
+kvm|NimoOS-KVM|NimoOS-KVM|go|arch|nimoos-kvm|nimoos-kvm|VERSION_KVM|0
 parser|NimoOS-Parser|NimoOS-Parser|python|all|-|nimoos-parser|VERSION_PARSER|0
 aiagent|NimoOS-AI|NimoOS-AI|dockeragent|all|-|nimoos-agent|VERSION_AIAGENT|0
 ui|NimoOS-UI|NimoOS-UI|static|all|-|nimoos|VERSION_UI|0
 appstore|NimoOS-AppStore|NimoOS-AppStore|script|all|package_appstore.sh|appstore|VERSION_APPSTORE|0
 core|NimoOS|NimoOS|go|arch|nimoos|nimoos|VERSION_CORE|1
 EOF
+}
+
+# Go binaries linked dynamically rather than fully static (by binary name).
+# nimoos-kvm binds libvirt through cgo, and libvirt ships no static archive
+# (Debian has no libvirt.a): a static link fails with "cannot find -lvirt". The
+# binary needs libvirt0 on the target, so the installers try it there first.
+# release.sh (nimo_os_docs) and .github/workflows/release.yml both ask this.
+go_links_dynamically() {
+    case "$1" in
+        nimoos-kvm) return 0 ;;
+    esac
+    return 1
 }
 
 # Look up one registry line by key (non-zero exit when absent)
